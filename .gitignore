@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist-electron/
+renderer/dist/
+release/
+electron/touchid/touchid-auth
+
+# macOS / editors / logs
+.DS_Store
+*.log

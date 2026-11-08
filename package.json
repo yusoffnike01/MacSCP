@@ -1,0 +1,91 @@
+{
+  "name": "macscp",
+  "version": "1.0.0",
+  "description": "A WinSCP-style SSH terminal and SFTP file manager for macOS, unlocked with Touch ID.",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yusoffnike01/MacSCP.git"
+  },
+  "homepage": "https://github.com/yusoffnike01/MacSCP#readme",
+  "bugs": {
+    "url": "https://github.com/yusoffnike01/MacSCP/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "postinstall": "npm --prefix renderer install",
+    "dev:renderer": "cd renderer && npm run dev",
+    "build:renderer": "cd renderer && npm run build",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build:touchid": "cd electron/touchid && swiftc -O TouchIDAuth.swift -o touchid-auth && chmod 700 touchid-auth",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3,keytar",
+    "build": "npm run build:touchid && npm run build:renderer && npm run build:electron && npm run rebuild:native",
+    "start": "npm run build && electron .",
+    "dist": "npm run build:touchid && npm run build:renderer && npm run build:electron && electron-builder --mac",
+    "install:app": "npm run dist && node scripts/install-app.mjs"
+  },
+  "keywords": [
+    "ssh",
+    "sftp",
+    "winscp",
+    "macos",
+    "touch-id",
+    "terminal",
+    "file-manager",
+    "electron"
+  ],
+  "author": "yusoffnike01",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.6",
+    "@types/ssh2": "^1.15.6",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "electron-rebuild": "^3.2.9",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "keytar": "^7.9.0",
+    "ssh2": "^1.17.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "cpu-features@0.0.10": true,
+    "keytar@7.9.0": true,
+    "ssh2@1.17.0": true,
+    "electron": true,
+    "electron-winstaller": false,
+    "lzma-native": false
+  },
+  "build": {
+    "appId": "io.github.yusoffnike01.macscp",
+    "productName": "MacSCP",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "package.json",
+      "dist-electron/**/*.js",
+      "renderer/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/touchid/touchid-auth",
+        "to": "touchid-auth"
+      }
+    ],
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
+    "mac": {
+      "target": "dir",
+      "identity": "-",
+      "hardenedRuntime": false
+    }
+  }
+}
