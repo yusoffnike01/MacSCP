@@ -4,7 +4,8 @@ export interface ServerConnection {
   host: string;
   port: number;
   username: string;
-  auth_method: "key" | "agent";
+  // 'agent' (ssh-agent) isn't supported yet.
+  auth_method: "key" | "password" | "agent";
   key_path: string | null;
   color: string;
   created_at: string;
@@ -80,22 +81,31 @@ export interface WindowApi {
     update: (
       id: string,
       changes: Partial<
-        Pick<ServerConnection, "name" | "host" | "port" | "username" | "key_path" | "color">
+        Pick<
+          ServerConnection,
+          "name" | "host" | "port" | "username" | "auth_method" | "key_path" | "color"
+        >
       >
     ) => Promise<ServerConnection>;
     delete: (id: string) => Promise<void>;
-    setPassphrase: (id: string, passphrase: string) => Promise<void>;
+    // Saves the server's login password or key passphrase (whichever its
+    // auth_method uses) in the Keychain.
+    setSecret: (id: string, secret: string) => Promise<void>;
     pickKeyFile: () => Promise<string | null>;
   };
   ssh: {
     connect: (connectionId: string) => Promise<string>;
-    connectWithPassphrase: (connectionId: string, passphrase: string) => Promise<string>;
+    // Without Touch ID: connect with a typed password or key passphrase.
+    connectWithSecret: (connectionId: string, secret: string) => Promise<string>;
     disconnect: (sessionId: string) => Promise<void>;
     openShell: (sessionId: string, cols: number, rows: number) => Promise<void>;
     write: (sessionId: string, data: string) => void;
     resize: (sessionId: string, cols: number, rows: number) => void;
     onData: (sessionId: string, cb: (chunk: string) => void) => () => void;
     onClosed: (sessionId: string, cb: () => void) => () => void;
+    // A session's connection dropped by itself (network lost, server
+    // restarted). Not called after disconnect().
+    onDropped: (cb: (sessionId: string) => void) => () => void;
   };
   sftp: {
     list: (sessionId: string, remotePath: string) => Promise<RemoteEntry[]>;

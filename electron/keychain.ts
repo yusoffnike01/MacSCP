@@ -1,29 +1,37 @@
-// Stores/retrieves SSH key passphrases in the macOS Keychain via keytar.
+// Stores/retrieves each server's secret in the macOS Keychain via keytar:
+// its login password, or its SSH key's passphrase.
 // Retrieval is ALWAYS gated by Touch ID at the call site (ipc-handlers.ts) —
-// this module itself has no biometric check, so never call getPassphrase()
+// this module itself has no biometric check, so never call getSecret()
 // without a preceding successful requestTouchId().
 
 import keytar from "keytar";
 
-const SERVICE = "MacSCP:ssh-key-passphrase";
+// A Keychain service per kind of secret, so each item says what it holds.
+const SERVICES = {
+  passphrase: "MacSCP:ssh-key-passphrase",
+  password: "MacSCP:ssh-password",
+} as const;
 
-export async function setPassphrase(
+export type SecretKind = keyof typeof SERVICES;
+
+export async function setSecret(
+  kind: SecretKind,
   connectionId: string,
-  passphrase: string
+  secret: string
 ): Promise<void> {
-  await keytar.setPassword(SERVICE, connectionId, passphrase);
+  await keytar.setPassword(SERVICES[kind], connectionId, secret);
 }
 
-export async function getPassphrase(
+export async function getSecret(
+  kind: SecretKind,
   connectionId: string
 ): Promise<string | null> {
-  return keytar.getPassword(SERVICE, connectionId);
+  return keytar.getPassword(SERVICES[kind], connectionId);
 }
 
-export async function deletePassphrase(connectionId: string): Promise<void> {
-  await keytar.deletePassword(SERVICE, connectionId);
-}
-
-export async function hasPassphrase(connectionId: string): Promise<boolean> {
-  return (await keytar.getPassword(SERVICE, connectionId)) !== null;
+export async function deleteSecret(
+  kind: SecretKind,
+  connectionId: string
+): Promise<void> {
+  await keytar.deletePassword(SERVICES[kind], connectionId);
 }

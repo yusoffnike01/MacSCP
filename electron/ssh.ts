@@ -29,8 +29,10 @@ export interface ConnectParams {
   host: string;
   port: number;
   username: string;
-  privateKeyPath: string;
-  passphrase: string | null;
+  // How to log in: with an SSH key file, or with a password.
+  auth:
+    | { method: "key"; privateKeyPath: string; passphrase: string | null }
+    | { method: "password"; password: string };
   // Fingerprint of the server host key the user trusted before, or null if
   // they haven't trusted this server yet. Any other key is refused.
   trustedHostKey: string | null;
@@ -65,19 +67,35 @@ function hostKeyType(key: Buffer): string {
   }
 }
 
-export function connect(params: ConnectParams): Promise<string> {
+export function connect(
+  params: ConnectParams,
+  // Called once if the connection later drops by itself (network lost,
+  // server restarted, keepalive timed out). Not called after disconnect().
+  onDropped: (sessionId: string) => void
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const client = new Client();
     const sessionId = crypto.randomUUID();
     let rejectedKey: HostKeyError | null = null;
+    const { auth } = params;
 
     const config: ConnectConfig = {
       host: params.host,
       port: params.port,
       username: params.username,
-      privateKey: fs.readFileSync(params.privateKeyPath),
-      passphrase: params.passphrase ?? undefined,
+      ...(auth.method === "key"
+        ? {
+            privateKey: fs.readFileSync(auth.privateKeyPath),
+            passphrase: auth.passphrase ?? undefined,
+          }
+        : // Keyboard-interactive is tried if plain password login fails.
+          { password: auth.password, tryKeyboard: true }),
       readyTimeout: 20_000,
+      // Ping the server every 15 s and give up after 3 unanswered pings.
+      // Without this, a connection that died silently (Wi-Fi lost, Mac
+      // asleep) would go unnoticed and keep showing as connected.
+      keepaliveInterval: 15_000,
+      keepaliveCountMax: 3,
       // Only go on (and authenticate) if the server proves it is the one
       // the user trusted, like OpenSSH's known_hosts check.
       hostVerifier: (key: Buffer) => {
@@ -87,6 +105,23 @@ export function connect(params: ConnectParams): Promise<string> {
         return false;
       },
     };
+
+    if (auth.method === "password") {
+      // Some servers take the password only through keyboard-interactive
+      // login (e.g. via PAM), as one hidden "Password:" prompt. Answer that
+      // prompt once. Anything else, like a one-time code, can't be answered
+      // here, so the login fails rather than hanging.
+      const { password } = auth;
+      let answered = false;
+      client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+        if (!answered && prompts.length === 1 && !prompts[0].echo) {
+          answered = true;
+          finish([password]);
+        } else {
+          finish(prompts.map(() => ""));
+        }
+      });
+    }
 
     client
       .on("ready", () => {
@@ -100,6 +135,11 @@ export function connect(params: ConnectParams): Promise<string> {
       })
       .on("error", (err) => {
         reject(rejectedKey ?? err);
+      })
+      .on("close", () => {
+        // disconnect() unregisters a session before its "close" event comes,
+        // so a session still registered here dropped by itself.
+        if (sessions.has(sessionId)) onDropped(sessionId);
       })
       .connect(config);
   });

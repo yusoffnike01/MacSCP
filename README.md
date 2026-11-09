@@ -52,13 +52,18 @@ git pull && npm install && npm run install:app
 
 ### 1. Add a server
 
-Click **+ Add server** at the bottom of the sidebar and fill in the server's address, your username and your SSH private key file (for example `~/.ssh/id_ed25519`). If your key has a passphrase, enter it once; MacSCP keeps it in the macOS Keychain.
+Click **+ Add server** at the bottom of the sidebar and fill in the server's address and your username. Then, under **Authentication**, choose how you log in:
+
+- **SSH key**: choose your private key file (for example `~/.ssh/id_ed25519`). If your key has a passphrase, enter it once.
+- **Password**: enter the server password once.
+
+MacSCP keeps the password or passphrase in the macOS Keychain.
 
 <img src="docs/screenshots/6-add-server.png" alt="Add server form" width="760">
 
 ### 2. Connect with Touch ID
 
-Click the server in the sidebar, then **Verify with Touch ID**.
+Click the server in the sidebar, then **Verify with Touch ID**. Once connected, a pulsing green dot appears next to the server's name; it goes away if the connection drops.
 
 The first time you connect to a server, MacSCP shows its **fingerprint** (for example `SHA256:aIUAFOAY…`) and asks if you trust it. To be sure it's the right server, compare it with the output of `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. After that, MacSCP connects straight away, and warns you if the fingerprint ever changes.
 
@@ -120,7 +125,7 @@ Double-click a text file (or right-click → **Edit**). Save with **⌘S**, clos
 
 - MacSCP asks for **Touch ID every time you connect**.
 - Your server list (name, address, username, key file location and trusted fingerprint) is stored only on your Mac, in `~/Library/Application Support/MacSCP`. No passwords are stored there.
-- Key passphrases are stored in the **macOS Keychain** and only read after Touch ID.
+- Passwords and key passphrases are stored in the **macOS Keychain** and only read after Touch ID.
 - Your private key stays where it is (for example in `~/.ssh`). MacSCP only reads it when connecting.
 - MacSCP talks only to your servers. There is no tracking or analytics.
 
@@ -129,7 +134,7 @@ Touch ID protects access *through MacSCP*; it doesn't lock the key file itself. 
 ## Limitations
 
 - **macOS only.** It relies on Touch ID.
-- **SSH key login only.** Password login and ssh-agent aren't supported yet.
+- **SSH key or password login only.** ssh-agent isn't supported yet, nor are servers that also ask for a one-time code (two-factor login).
 - **One file at a time.** No multi-select, drag and drop, or folder upload yet.
 - **Not signed by Apple yet.** Build it yourself as shown above. A copy downloaded from someone else will be blocked by macOS.
 

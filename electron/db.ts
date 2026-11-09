@@ -1,7 +1,8 @@
 // SQLite storage for server connection METADATA only.
 // No passwords or decrypted passphrases are ever written here.
-// Passphrases for SSH keys live in the macOS Keychain (via keytar),
-// gated behind Touch ID at connect-time (see touchid.ts + ipc-handlers.ts).
+// Login passwords and SSH key passphrases live in the macOS Keychain (via
+// keytar), gated behind Touch ID at connect-time (see touchid.ts +
+// ipc-handlers.ts).
 
 import Database from "better-sqlite3";
 import { app } from "electron";
@@ -16,20 +17,23 @@ const dbPath = path.join(dbDir, "connections.sqlite3");
 export const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS connections (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    host TEXT NOT NULL,
-    port INTEGER NOT NULL DEFAULT 22,
-    username TEXT NOT NULL,
-    auth_method TEXT NOT NULL CHECK (auth_method IN ('key', 'agent')),
-    key_path TEXT,
-    color TEXT DEFAULT 'slate',
-    created_at TEXT NOT NULL,
-    last_used_at TEXT
-  );
-`);
+// The current table layout. Databases from older versions are brought up to
+// date below.
+const CONNECTION_COLUMNS = `
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 22,
+  username TEXT NOT NULL,
+  auth_method TEXT NOT NULL CHECK (auth_method IN ('key', 'password', 'agent')),
+  key_path TEXT,
+  color TEXT DEFAULT 'slate',
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  host_key_sha256 TEXT
+`;
+
+db.exec(`CREATE TABLE IF NOT EXISTS connections (${CONNECTION_COLUMNS})`);
 
 // Added later: the fingerprint of the server's host key the user trusted
 // (see ssh.connect). Databases from older versions get the column here.
@@ -38,13 +42,34 @@ if (!columns.some((column) => column.name === "host_key_sha256")) {
   db.exec("ALTER TABLE connections ADD COLUMN host_key_sha256 TEXT");
 }
 
+// Added later: password login. SQLite can't change a CHECK constraint in
+// place, so an older table, which only allows 'key' and 'agent', is rebuilt.
+const { sql: tableSql } = db
+  .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connections'")
+  .get() as { sql: string };
+if (!tableSql.includes("'password'")) {
+  const names =
+    "id, name, host, port, username, auth_method, key_path, color, created_at, last_used_at, host_key_sha256";
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE connections_new (${CONNECTION_COLUMNS});
+      INSERT INTO connections_new (${names}) SELECT ${names} FROM connections;
+      DROP TABLE connections;
+      ALTER TABLE connections_new RENAME TO connections;
+    `);
+  })();
+}
+
+// How MacSCP logs in to a server. 'agent' (ssh-agent) isn't supported yet.
+export type AuthMethod = "key" | "password" | "agent";
+
 export interface ServerConnection {
   id: string;
   name: string;
   host: string;
   port: number;
   username: string;
-  auth_method: "key" | "agent";
+  auth_method: AuthMethod;
   key_path: string | null;
   color: string;
   created_at: string;
@@ -69,7 +94,7 @@ export function createConnection(input: {
   host: string;
   port: number;
   username: string;
-  auth_method: "key" | "agent";
+  auth_method: AuthMethod;
   key_path?: string | null;
   color?: string;
 }): ServerConnection {
@@ -97,6 +122,7 @@ export interface ConnectionChanges {
   host?: string;
   port?: number;
   username?: string;
+  auth_method?: AuthMethod;
   key_path?: string | null;
   color?: string;
 }
@@ -119,6 +145,7 @@ export function updateConnection(
     }
     next.port = changes.port;
   }
+  if (changes.auth_method !== undefined) next.auth_method = changes.auth_method;
   if (changes.key_path !== undefined) next.key_path = changes.key_path;
   if (changes.color !== undefined) next.color = changes.color;
   // A different address is a different server: its host key must be
@@ -130,7 +157,8 @@ export function updateConnection(
   db.prepare(
     `UPDATE connections
      SET name = @name, host = @host, port = @port, username = @username,
-         key_path = @key_path, color = @color, host_key_sha256 = @host_key_sha256
+         auth_method = @auth_method, key_path = @key_path, color = @color,
+         host_key_sha256 = @host_key_sha256
      WHERE id = @id`
   ).run({
     id,
@@ -138,6 +166,7 @@ export function updateConnection(
     host: next.host,
     port: next.port,
     username: next.username,
+    auth_method: next.auth_method,
     key_path: next.key_path,
     color: next.color,
     host_key_sha256: next.host_key_sha256,
