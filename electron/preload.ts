@@ -11,14 +11,14 @@ contextBridge.exposeInMainWorld("api", {
     update: (id: string, changes: unknown) =>
       ipcRenderer.invoke("connections:update", id, changes),
     delete: (id: string) => ipcRenderer.invoke("connections:delete", id),
-    setPassphrase: (id: string, passphrase: string) =>
-      ipcRenderer.invoke("connections:set-passphrase", id, passphrase),
+    setSecret: (id: string, secret: string) =>
+      ipcRenderer.invoke("connections:set-secret", id, secret),
     pickKeyFile: () => ipcRenderer.invoke("connections:pick-key-file"),
   },
   ssh: {
     connect: (connectionId: string) => ipcRenderer.invoke("ssh:connect", connectionId),
-    connectWithPassphrase: (connectionId: string, passphrase: string) =>
-      ipcRenderer.invoke("ssh:connect-with-passphrase", connectionId, passphrase),
+    connectWithSecret: (connectionId: string, secret: string) =>
+      ipcRenderer.invoke("ssh:connect-with-secret", connectionId, secret),
     disconnect: (sessionId: string) => ipcRenderer.invoke("ssh:disconnect", sessionId),
     openShell: (sessionId: string, cols: number, rows: number) =>
       ipcRenderer.invoke("ssh:open-shell", sessionId, cols, rows),

@@ -2,10 +2,19 @@ import { useState } from "react";
 import type { ServerConnection } from "../types";
 import { errorMessage } from "../format";
 
-function connectError(err: unknown): string {
+// `typed`: the password was typed in just now, rather than the saved one.
+function connectError(err: unknown, connection: ServerConnection, typed: boolean): string {
   const message = errorMessage(err);
   if (message.includes("HOST_KEY_REJECTED")) {
     return "Not connected: the server's host key wasn't trusted.";
+  }
+  if (
+    connection.auth_method === "password" &&
+    message.includes("All configured authentication methods failed")
+  ) {
+    return typed
+      ? "The server didn't accept the username and password."
+      : "The server didn't accept the saved username and password. To change them, right-click the server and choose Edit…";
   }
   return message;
 }
@@ -18,10 +27,12 @@ export function ConnectGate({
   onConnected: (sessionId: string) => void;
 }) {
   const [status, setStatus] = useState<
-    "idle" | "connecting" | "need-passphrase" | "error"
+    "idle" | "connecting" | "need-secret" | "error"
   >("idle");
   const [error, setError] = useState<string | null>(null);
-  const [passphrase, setPassphrase] = useState("");
+  // The password or key passphrase, typed in when Touch ID is unavailable.
+  const [typedSecret, setTypedSecret] = useState("");
+  const usesPassword = connection.auth_method === "password";
 
   async function handleConnect() {
     setStatus("connecting");
@@ -32,13 +43,13 @@ export function ConnectGate({
     } catch (err) {
       const message = errorMessage(err);
       if (message.includes("TOUCHID_UNAVAILABLE")) {
-        setStatus("need-passphrase");
+        setStatus("need-secret");
       } else if (message.includes("TOUCHID_DENIED")) {
         setStatus("idle");
         setError("Touch ID was not confirmed. Try again.");
       } else {
         setStatus("error");
-        setError(connectError(err));
+        setError(connectError(err, connection, false));
       }
     }
   }
@@ -47,14 +58,14 @@ export function ConnectGate({
     setStatus("connecting");
     setError(null);
     try {
-      const sessionId = await window.api.ssh.connectWithPassphrase(
+      const sessionId = await window.api.ssh.connectWithSecret(
         connection.id,
-        passphrase
+        typedSecret
       );
       onConnected(sessionId);
     } catch (err) {
       setStatus("error");
-      setError(connectError(err));
+      setError(connectError(err, connection, true));
     }
   }
 
@@ -72,21 +83,23 @@ export function ConnectGate({
         </p>
       </div>
 
-      {status === "need-passphrase" ? (
+      {status === "need-secret" ? (
         <div className="flex w-72 flex-col gap-2">
           <p className="text-center text-xs text-text-muted">
-            Touch ID is unavailable. Enter the SSH key passphrase.
+            Touch ID is unavailable. Enter the{" "}
+            {usesPassword ? "password" : "SSH key passphrase"}.
           </p>
           <input
             type="password"
-            value={passphrase}
-            onChange={(e) => setPassphrase(e.target.value)}
+            value={typedSecret}
+            onChange={(e) => setTypedSecret(e.target.value)}
             autoFocus
             className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
           />
           <button
             onClick={handleManualConnect}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface-0 hover:opacity-90"
+            disabled={usesPassword && !typedSecret}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface-0 hover:opacity-90 disabled:opacity-50"
           >
             Connect
           </button>

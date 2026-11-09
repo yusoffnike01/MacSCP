@@ -80,8 +80,14 @@ export default function App() {
           </div>
         )}
 
+        {/* Keyed by server, so a password typed (or an error shown) for one
+            server is never carried over to the next. */}
         {activeConn && !sessionId && (
-          <ConnectGate connection={activeConn} onConnected={setSessionId} />
+          <ConnectGate
+            key={activeConn.id}
+            connection={activeConn}
+            onConnected={setSessionId}
+          />
         )}
 
         {activeConn && sessionId && (
@@ -152,8 +158,9 @@ export default function App() {
           }}
         >
           <p>
-            This removes the server from this app and deletes its saved key
-            passphrase from the Keychain. Nothing on the server itself is changed.
+            This removes the server from this app and deletes its saved{" "}
+            {serverDialog.conn.auth_method === "password" ? "password" : "key passphrase"}{" "}
+            from the Keychain. Nothing on the server itself is changed.
           </p>
           <p className="break-all font-mono text-xs text-text-muted">
             {serverDialog.conn.username}@{serverDialog.conn.host}:{serverDialog.conn.port}

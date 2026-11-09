@@ -27,8 +27,13 @@ import {
   type ServerConnection,
 } from "./db";
 import { requestTouchId } from "./touchid";
-import { getPassphrase, setPassphrase, deletePassphrase } from "./keychain";
+import { getSecret, setSecret, deleteSecret, type SecretKind } from "./keychain";
 import * as ssh from "./ssh";
+
+// The Keychain secret a server logs in with.
+function secretKind(conn: ServerConnection): SecretKind {
+  return conn.auth_method === "password" ? "password" : "passphrase";
+}
 
 // Dialogs attach to the window that asked. There is no fixed "main" window:
 // on macOS it can be closed and a new one opened from the Dock.
@@ -42,21 +47,33 @@ function showSaveDialog(sender: WebContents, options: SaveDialogOptions) {
   return win ? dialog.showSaveDialog(win, options) : dialog.showSaveDialog(options);
 }
 
-// Connects to a saved server. If its host key isn't trusted yet, or doesn't
-// match the trusted one, the user is asked first (like WinSCP, PuTTY and
-// OpenSSH); a key they accept is remembered for next time.
+// Connects to a saved server with its login password or key passphrase
+// (`secret`). If its host key isn't trusted yet, or doesn't match the trusted
+// one, the user is asked first (like WinSCP, PuTTY and OpenSSH); a key they
+// accept is remembered for next time. Nothing is sent to log in until the
+// host key is trusted.
 async function connectTrusted(
   sender: WebContents,
   conn: ServerConnection,
-  passphrase: string | null
+  secret: string | null
 ): Promise<string> {
-  if (!conn.key_path) throw new Error("No SSH key file is set for this server");
+  let auth: ssh.ConnectParams["auth"];
+  if (conn.auth_method === "password") {
+    if (!secret) {
+      throw new Error(
+        "No password is saved for this server. Right-click it and choose Edit… to enter it."
+      );
+    }
+    auth = { method: "password", password: secret };
+  } else {
+    if (!conn.key_path) throw new Error("No SSH key file is set for this server");
+    auth = { method: "key", privateKeyPath: conn.key_path, passphrase: secret };
+  }
   const params = {
     host: conn.host,
     port: conn.port,
     username: conn.username,
-    privateKeyPath: conn.key_path,
-    passphrase,
+    auth,
   };
   // Tell the window if the connection drops later, so it stops showing the
   // server as connected.
@@ -138,18 +155,31 @@ export function registerIpcHandlers() {
 
   ipcMain.handle(
     "connections:update",
-    (_evt, id: string, changes: ConnectionChanges) => updateConnection(id, changes)
+    async (_evt, id: string, changes: ConnectionChanges) => {
+      const before = getConnection(id);
+      const updated = updateConnection(id, changes);
+      // Switched between key and password login: the old secret isn't used
+      // any more, so don't leave it in the Keychain.
+      if (before && secretKind(before) !== secretKind(updated)) {
+        await deleteSecret(secretKind(before), id);
+      }
+      return updated;
+    }
   );
 
   ipcMain.handle("connections:delete", async (_evt, id: string) => {
-    await deletePassphrase(id);
+    await deleteSecret("passphrase", id);
+    await deleteSecret("password", id);
     deleteConnection(id);
   });
 
-  ipcMain.handle("connections:set-passphrase", async (_evt, id: string, passphrase: string) => {
-    // Called once during setup, right after the user generates/imports a key.
+  ipcMain.handle("connections:set-secret", async (_evt, id: string, secret: string) => {
+    // Called right after a server is added or edited, with its login
+    // password or key passphrase (whichever its login method uses).
     // Not gated by Touch ID itself — the GATE is on retrieval, not storage.
-    await setPassphrase(id, passphrase);
+    const conn = getConnection(id);
+    if (!conn) throw new Error("Connection not found");
+    await setSecret(secretKind(conn), id, secret);
   });
 
   ipcMain.handle("connections:pick-key-file", async (evt) => {
@@ -162,7 +192,7 @@ export function registerIpcHandlers() {
     return result.filePaths[0];
   });
 
-  // --- Connect flow: Touch ID gate -> Keychain passphrase -> ssh2 connect ---
+  // --- Connect flow: Touch ID gate -> Keychain secret -> ssh2 connect ---
   ipcMain.handle("ssh:connect", async (evt, connectionId: string) => {
     const conn = getConnection(connectionId);
     if (!conn) throw new Error("Connection not found");
@@ -174,29 +204,30 @@ export function registerIpcHandlers() {
       throw new Error("TOUCHID_DENIED");
     }
     // "unavailable" (no biometric hardware/enrollment) falls through to
-    // the renderer, which must then prompt the user to type the
-    // passphrase manually instead of silently connecting.
-    let passphrase: string | null = null;
+    // the renderer, which must then prompt the user to type the password
+    // or passphrase manually instead of silently connecting.
+    let secret: string | null = null;
     if (touchIdResult === "ok") {
-      passphrase = conn.key_path ? await getPassphrase(connectionId) : null;
+      secret = await getSecret(secretKind(conn), connectionId);
     } else {
       throw new Error("TOUCHID_UNAVAILABLE");
     }
 
-    const sessionId = await connectTrusted(evt.sender, conn, passphrase);
+    const sessionId = await connectTrusted(evt.sender, conn, secret);
     touchLastUsed(connectionId);
     return sessionId;
   });
 
   ipcMain.handle(
-    "ssh:connect-with-passphrase",
-    async (evt, connectionId: string, passphrase: string) => {
-      // Manual fallback path when Touch ID is unavailable or the user
-      // opts to type the passphrase directly. Still never written to disk.
+    "ssh:connect-with-secret",
+    async (evt, connectionId: string, secret: string) => {
+      // Manual fallback path when Touch ID is unavailable or the user opts
+      // to type the password or key passphrase directly. Still never
+      // written to disk.
       const conn = getConnection(connectionId);
       if (!conn) throw new Error("Connection not found");
 
-      const sessionId = await connectTrusted(evt.sender, conn, passphrase);
+      const sessionId = await connectTrusted(evt.sender, conn, secret);
       touchLastUsed(connectionId);
       return sessionId;
     }

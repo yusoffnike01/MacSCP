@@ -29,8 +29,10 @@ export interface ConnectParams {
   host: string;
   port: number;
   username: string;
-  privateKeyPath: string;
-  passphrase: string | null;
+  // How to log in: with an SSH key file, or with a password.
+  auth:
+    | { method: "key"; privateKeyPath: string; passphrase: string | null }
+    | { method: "password"; password: string };
   // Fingerprint of the server host key the user trusted before, or null if
   // they haven't trusted this server yet. Any other key is refused.
   trustedHostKey: string | null;
@@ -75,13 +77,19 @@ export function connect(
     const client = new Client();
     const sessionId = crypto.randomUUID();
     let rejectedKey: HostKeyError | null = null;
+    const { auth } = params;
 
     const config: ConnectConfig = {
       host: params.host,
       port: params.port,
       username: params.username,
-      privateKey: fs.readFileSync(params.privateKeyPath),
-      passphrase: params.passphrase ?? undefined,
+      ...(auth.method === "key"
+        ? {
+            privateKey: fs.readFileSync(auth.privateKeyPath),
+            passphrase: auth.passphrase ?? undefined,
+          }
+        : // Keyboard-interactive is tried if plain password login fails.
+          { password: auth.password, tryKeyboard: true }),
       readyTimeout: 20_000,
       // Ping the server every 15 s and give up after 3 unanswered pings.
       // Without this, a connection that died silently (Wi-Fi lost, Mac
@@ -97,6 +105,23 @@ export function connect(
         return false;
       },
     };
+
+    if (auth.method === "password") {
+      // Some servers take the password only through keyboard-interactive
+      // login (e.g. via PAM), as one hidden "Password:" prompt. Answer that
+      // prompt once. Anything else, like a one-time code, can't be answered
+      // here, so the login fails rather than hanging.
+      const { password } = auth;
+      let answered = false;
+      client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+        if (!answered && prompts.length === 1 && !prompts[0].echo) {
+          answered = true;
+          finish([password]);
+        } else {
+          finish(prompts.map(() => ""));
+        }
+      });
+    }
 
     client
       .on("ready", () => {
