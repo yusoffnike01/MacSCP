@@ -96,6 +96,9 @@ export interface WindowApi {
     resize: (sessionId: string, cols: number, rows: number) => void;
     onData: (sessionId: string, cb: (chunk: string) => void) => () => void;
     onClosed: (sessionId: string, cb: () => void) => () => void;
+    // A session's connection dropped by itself (network lost, server
+    // restarted). Not called after disconnect().
+    onDropped: (cb: (sessionId: string) => void) => () => void;
   };
   sftp: {
     list: (sessionId: string, remotePath: string) => Promise<RemoteEntry[]>;

@@ -37,6 +37,12 @@ contextBridge.exposeInMainWorld("api", {
       ipcRenderer.on(channel, listener);
       return () => ipcRenderer.removeListener(channel, listener);
     },
+    // Any session, so a drop right after connecting isn't missed.
+    onDropped: (cb: (sessionId: string) => void) => {
+      const listener = (_evt: unknown, sessionId: string) => cb(sessionId);
+      ipcRenderer.on("ssh:dropped", listener);
+      return () => ipcRenderer.removeListener("ssh:dropped", listener);
+    },
   },
   sftp: {
     list: (sessionId: string, remotePath: string) =>

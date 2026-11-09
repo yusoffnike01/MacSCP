@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { AddServerModal } from "./components/AddServerModal";
 import { ConnectGate } from "./components/ConnectGate";
@@ -18,10 +18,18 @@ type ServerDialog =
 export default function App() {
   const [activeConn, setActiveConn] = useState<ServerConnection | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // The last session whose connection dropped by itself. Its terminal stays
+  // on screen, but its server no longer shows as connected.
+  const [droppedSessionId, setDroppedSessionId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("terminal");
   const [showAddModal, setShowAddModal] = useState(false);
   const [serverDialog, setServerDialog] = useState<ServerDialog | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => window.api.ssh.onDropped(setDroppedSessionId), []);
+
+  const connectedId =
+    activeConn && sessionId && sessionId !== droppedSessionId ? activeConn.id : null;
 
   function handleSelectConnection(conn: ServerConnection) {
     if (sessionId) {
@@ -53,6 +61,7 @@ export default function App() {
     <div className="flex h-screen overflow-hidden">
       <Sidebar
         activeId={activeConn?.id ?? null}
+        connectedId={connectedId}
         onSelect={handleSelectConnection}
         onAddServer={() => setShowAddModal(true)}
         onEdit={(conn) => setServerDialog({ kind: "edit", conn })}

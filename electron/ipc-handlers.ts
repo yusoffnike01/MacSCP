@@ -58,13 +58,21 @@ async function connectTrusted(
     privateKeyPath: conn.key_path,
     passphrase,
   };
+  // Tell the window if the connection drops later, so it stops showing the
+  // server as connected.
+  const onDropped = (sessionId: string) => {
+    if (!sender.isDestroyed()) sender.send("ssh:dropped", sessionId);
+  };
   try {
-    return await ssh.connect({ ...params, trustedHostKey: conn.host_key_sha256 });
+    return await ssh.connect(
+      { ...params, trustedHostKey: conn.host_key_sha256 },
+      onDropped
+    );
   } catch (err) {
     if (!(err instanceof ssh.HostKeyError)) throw err;
     if (!(await confirmHostKey(sender, conn, err))) throw new Error("HOST_KEY_REJECTED");
     setTrustedHostKey(conn.id, err.fingerprint);
-    return ssh.connect({ ...params, trustedHostKey: err.fingerprint });
+    return ssh.connect({ ...params, trustedHostKey: err.fingerprint }, onDropped);
   }
 }
 

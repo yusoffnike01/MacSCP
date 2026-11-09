@@ -58,7 +58,7 @@ Click **+ Add server** at the bottom of the sidebar and fill in the server's add
 
 ### 2. Connect with Touch ID
 
-Click the server in the sidebar, then **Verify with Touch ID**.
+Click the server in the sidebar, then **Verify with Touch ID**. Once connected, a pulsing green dot appears next to the server's name; it goes away if the connection drops.
 
 The first time you connect to a server, MacSCP shows its **fingerprint** (for example `SHA256:aIUAFOAY…`) and asks if you trust it. To be sure it's the right server, compare it with the output of `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. After that, MacSCP connects straight away, and warns you if the fingerprint ever changes.
 

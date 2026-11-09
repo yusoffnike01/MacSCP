@@ -12,6 +12,7 @@ const DOT_COLORS: Record<string, string> = {
 
 export function Sidebar({
   activeId,
+  connectedId,
   onSelect,
   onAddServer,
   onEdit,
@@ -20,6 +21,8 @@ export function Sidebar({
   refreshKey,
 }: {
   activeId: string | null;
+  // The server with a live SSH session, if any.
+  connectedId: string | null;
   onSelect: (conn: ServerConnection) => void;
   onAddServer: () => void;
   onEdit: (conn: ServerConnection) => void;
@@ -84,8 +87,9 @@ export function Sidebar({
                   }`}
                 />
                 <span className="flex-1 overflow-hidden">
-                  <span className="block truncate text-sm font-medium">
-                    {conn.name}
+                  <span className="flex items-center gap-1">
+                    <span className="truncate text-sm font-medium">{conn.name}</span>
+                    {connectedId === conn.id && <ConnectedIndicator />}
                   </span>
                   <span className="block truncate text-xs text-text-muted">
                     {conn.username}@{conn.host}
@@ -107,5 +111,22 @@ export function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+// Pulsing green dot after the name of the connected server. The pulse sets
+// it apart from the server's own color dot, which can also be green. The
+// 16px box leaves room for the pulse, so the row's overflow-hidden can't
+// clip it when a long name pushes the dot to the edge.
+function ConnectedIndicator() {
+  return (
+    <span
+      className="relative flex h-4 w-4 shrink-0 items-center justify-center"
+      title="Connected"
+    >
+      <span className="absolute inset-1 rounded-full bg-success opacity-75 motion-safe:animate-connected" />
+      <span className="relative h-2 w-2 rounded-full bg-success" />
+      <span className="sr-only">Connected</span>
+    </span>
   );
 }
