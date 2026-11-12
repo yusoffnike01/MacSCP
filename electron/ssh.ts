@@ -236,8 +236,15 @@ function getSftp(session: Session): Promise<SFTPWrapper> {
   const pending = new Promise<SFTPWrapper>((resolve, reject) => {
     session.client.sftp((err, sftp) => {
       if (err) return reject(err);
+      let markClosed = () => {};
+      const closed = new Promise<never>((_, rejectClosed) => {
+        markClosed = () => rejectClosed(new Error(CONNECTION_LOST));
+      });
+      closed.catch(() => {}); // only ever raced against (see sftpCall())
+      channelsClosed.set(sftp, closed);
       const forget = () => {
         closedChannels.add(sftp);
+        markClosed();
         if (session.sftp === pending) session.sftp = null;
       };
       sftp.on("close", forget).on("end", forget).on("error", forget);
@@ -260,19 +267,25 @@ function call<T>(
   });
 }
 
-// SFTP channels that have closed: the connection dropped or was closed.
+// SFTP channels that have closed: the connection dropped or was closed. And
+// for each channel, a promise that rejects when it closes.
 const closedChannels = new WeakSet<SFTPWrapper>();
+const channelsClosed = new WeakMap<SFTPWrapper, Promise<never>>();
 const CONNECTION_LOST = "The connection to the server was lost.";
 
-// call() for a request on `sftp`. Requests waiting for an answer fail when
-// the channel closes, but ssh2 never answers one made after that, so it fails
-// at once instead of waiting forever.
+// call() for a request on `sftp` (or a helper such as fastPut), which fails
+// as soon as the channel closes. ssh2 fails the requests waiting for an
+// answer then, but never answers one made after that, so anything that makes
+// one would wait forever: fastPut, for example, closes the remote file after
+// an error and waits for that.
 function sftpCall<T>(
   sftp: SFTPWrapper,
   run: (done: (err: Error | null | undefined, value?: T) => void) => void
 ): Promise<T> {
   if (closedChannels.has(sftp)) return Promise.reject(new Error(CONNECTION_LOST));
-  return call(run);
+  const request = call(run);
+  const closed = channelsClosed.get(sftp);
+  return closed ? Promise.race([request, closed]) : request;
 }
 
 // Closes a remote file or folder handle, without waiting for the answer,
@@ -427,7 +440,7 @@ async function remoteType(
   remotePath: string
 ): Promise<RemoteFileType | null> {
   try {
-    const attrs = await call<Stats>((done) => sftp.stat(remotePath, done));
+    const attrs = await sftpCall<Stats>(sftp, (done) => sftp.stat(remotePath, done));
     return fileType(attrs.mode);
   } catch (err) {
     if ((err as { code?: unknown }).code === SFTP_NO_SUCH_FILE) return null;
@@ -560,8 +573,9 @@ export async function prepareUpload(
 // A folder that's already there is used as it is, keeping its other files.
 async function makeUploadFolder(sftp: SFTPWrapper, folder: UploadFolder) {
   try {
-    await call<void>((done) => sftp.mkdir(folder.remotePath, done));
+    await sftpCall<void>(sftp, (done) => sftp.mkdir(folder.remotePath, done));
   } catch (err) {
+    if (closedChannels.has(sftp)) throw new Error(CONNECTION_LOST);
     const type = await remoteType(sftp, folder.remotePath).catch(() => null);
     if (type === "directory") return;
     throw new Error(
@@ -626,7 +640,7 @@ export async function startUpload(
         inFlight.set(file, 0);
         report();
         try {
-          await call<void>((done) =>
+          await sftpCall<void>(sftp, (done) =>
             sftp.fastPut(
               file.localPath,
               file.remotePath,
@@ -640,7 +654,9 @@ export async function startUpload(
             )
           );
         } catch (err) {
-          failure ??= new Error(`Couldn't upload “${file.display}”: ${errorText(err)}`);
+          failure ??= closedChannels.has(sftp)
+            ? new Error(CONNECTION_LOST)
+            : new Error(`Couldn't upload “${file.display}”: ${errorText(err)}`);
           return;
         } finally {
           inFlight.delete(file);
