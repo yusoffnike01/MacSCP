@@ -19,7 +19,7 @@ On Windows, WinSCP is the go-to tool for looking after servers: browse files, up
 - **Terminal and files in one window.** Each server gets an SSH terminal tab and an SFTP file browser tab.
 - **Touch ID before every connection.** Nobody can open your servers from your Mac without your fingerprint.
 - **Upload files and whole folders.** Use **Upload file** or **Upload folder**, or drag them from Finder onto the Files tab.
-- **Download files and whole folders.** Right-click → **Download…**, and a folder comes down with everything inside it.
+- **Download files and whole folders.** Right-click → **Download…**, and a folder comes down with everything inside it, keeping the dates it has on the server.
 - **Transfer progress like WinSCP.** Percentage, time elapsed, time left and speed for uploads and downloads, and a clear "complete" when they finish.
 - **Right-click menus like WinSCP.** Edit, Download, Rename, Delete, Copy Path and Properties.
 - **Properties like WinSCP.** Change permissions (checkboxes or octal), owner and group, for one item or everything inside a folder.
@@ -86,7 +86,7 @@ The **Files** tab shows the files on the server.
 - Click a column title (Name, Size, Modified) to sort; click again to reverse.
 - Use **New folder**, **Upload file** and **Upload folder** at the top. Uploads go into the folder you're in, and a folder goes up with everything inside it.
 - You can also drag files or folders from Finder onto the list to upload them.
-- To download, right-click a file or folder and choose **Download…** (or click **Download** at the end of its row). A file asks where to save it; a folder asks which folder on your Mac to save it in, and comes down with everything inside it.
+- To download, right-click a file or folder and choose **Download…** (or click **Download** at the end of its row). A file asks where to save it; a folder asks which folder on your Mac to save it in, and comes down with everything inside it. Downloaded files and folders keep the modified dates they have on the server.
 - Uploads and downloads show a progress window: the percentage done, time elapsed, time left and speed. When the transfer is finished it turns green and says **Upload complete** or **Download complete** (with **Show in Finder** for downloads), and stays until you click OK.
 - **Stop** ends a download at once: files already saved are kept, and any file only partly saved is deleted. An upload stops once the files being sent at that moment are finished, so none is left half-written on the server.
 - Double-click a file to edit it.
@@ -151,7 +151,8 @@ Touch ID protects access *through MacSCP*; it doesn't lock the key file itself. 
 - **macOS only.** It relies on Touch ID.
 - **SSH key or password login only.** ssh-agent isn't supported yet, nor are servers that also ask for a one-time code (two-factor login).
 - **One item at a time.** No multi-select, or dragging files out to Finder, yet.
-- **Transfers don't keep permissions or dates.** Uploaded files get the server's defaults (usually `644`; change them with **Properties…**), and downloaded files get your Mac's.
+- **Permissions aren't copied.** Uploaded files get the server's defaults (usually `644`; change them with **Properties…**). Downloaded files get your Mac's, so nothing from a server becomes runnable by accident.
+- **Uploads don't keep dates.** Uploaded files are dated when they arrive on the server. (Downloads do keep the server's dates.)
 - **Not signed by Apple yet.** Build it yourself as shown above. A copy downloaded from someone else will be blocked by macOS.
 
 ## Development

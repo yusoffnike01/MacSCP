@@ -698,12 +698,16 @@ export function cancelUpload(uploadId: string): void {
 // lists everything inside a folder; startDownload() fetches it all. Stop
 // takes effect at once.
 
-interface DownloadFolder {
+interface DownloadItem {
   localPath: string;
   display: string; // relative to where it's saved, e.g. "backup/logs"
 }
 
-interface DownloadFile extends DownloadFolder {
+interface DownloadFolder extends DownloadItem {
+  times: FileTimes | null; // on the server
+}
+
+interface DownloadFile extends DownloadItem {
   remotePath: string;
   size: number; // when it was listed; files on a live server can change
 }
@@ -717,6 +721,7 @@ interface Download {
   remotePath: string;
   localPath: string; // of the file or folder
   isDirectory: boolean;
+  times: FileTimes | null; // the folder's, on the server
   folders: DownloadFolder[]; // parents before their subfolders
   files: DownloadFile[];
   bytesTotal: number;
@@ -786,6 +791,20 @@ const FOLDER_FILE_FLAGS =
 
 // The server's file got shorter while it was being downloaded.
 class FileShrank extends Error {}
+
+// When an item was last accessed and modified, in seconds. Downloads keep
+// the server's, like WinSCP and `sftp get -p`.
+interface FileTimes {
+  atime: number;
+  mtime: number;
+}
+
+// The times in a listing or stat, if the server sent them.
+function fileTimes(attrs: { atime?: unknown; mtime?: unknown }): FileTimes | null {
+  return typeof attrs.atime === "number" && typeof attrs.mtime === "number"
+    ? { atime: attrs.atime, mtime: attrs.mtime }
+    : null;
+}
 
 // Why an item inside a folder can't be downloaded, if the problem is with
 // just that item: it was deleted since the folder was listed, this login may
@@ -878,8 +897,8 @@ async function openLocalFile(localPath: string, flags: string | number) {
 // usable. (Closing the channel instead relies on the server answering
 // promptly, and in testing it sometimes didn't.) The local file is opened,
 // so created or emptied, only once its data starts to arrive, and is removed
-// again unless all of it does. Resolves with the size, or null if stopped
-// first.
+// again unless all of it does. It keeps the server's dates. Resolves with
+// the size, or null if stopped first.
 async function fetchFile(
   sftp: SFTPWrapper,
   remotePath: string,
@@ -897,7 +916,8 @@ async function fetchFile(
   const localFile = () => (opening ??= openLocalFile(localPath, localFlags));
   let saved = false;
   try {
-    const { size } = await sftpCall<Stats>(sftp, (done) => sftp.fstat(handle, done));
+    const attrs = await sftpCall<Stats>(sftp, (done) => sftp.fstat(handle, done));
+    const { size } = attrs;
     let next = 0; // where the next request starts
     let received = 0;
     let failure: Error | null = null;
@@ -940,6 +960,9 @@ async function fetchFile(
     if (failure) throw failure;
     if (received < size) return null; // stopped
     const file = await localFile(); // also for an empty file, with nothing to fetch
+    // The server's dates. Only if it can be done: the file is saved either way.
+    const times = fileTimes(attrs);
+    if (times) await file.utimes(times.atime, times.mtime).catch(() => {});
     await file.close();
     saved = true;
     return size;
@@ -995,6 +1018,7 @@ export async function prepareDownload(
     remotePath,
     localPath,
     isDirectory,
+    times: fileTimes(attrs),
     folders: [],
     files: isDirectory ? [] : [{ remotePath, localPath, display: name, size: attrs.size }],
     bytesTotal: isDirectory ? 0 : attrs.size,
@@ -1047,6 +1071,7 @@ async function listDownloadFolder(
     remotePath: download.remotePath,
     localPath: download.localPath,
     display: path.posix.basename(download.remotePath),
+    times: download.times,
   };
   download.folders.push(top);
   let lastReport = 0;
@@ -1114,7 +1139,7 @@ async function listDownloadFolder(
       taken.set(macName(name), name);
       const localPath = path.join(folder.localPath, name);
       if (isDirectory) {
-        const subfolder = { remotePath, localPath, display };
+        const subfolder = { remotePath, localPath, display, times: fileTimes(attrs) };
         download.folders.push(subfolder);
         subfolders.push(subfolder);
       } else {
@@ -1287,7 +1312,16 @@ export async function startDownload(
     if (failure && keepGoing()) throw failure;
     const finished =
       foldersDone === folders.length && filesDone + filesSkipped === files.length;
-    if (finished) savedDownloads.set(downloadId, download.localPath);
+    if (finished) {
+      // The folders' dates last: saving files in them changed those. lutimes,
+      // so a symbolic link that took a folder's place is never followed.
+      for (const folder of folders) {
+        if (!folder.times) continue;
+        const { atime, mtime } = folder.times;
+        await fs.promises.lutimes(folder.localPath, atime, mtime).catch(() => {});
+      }
+      savedDownloads.set(downloadId, download.localPath);
+    }
     return result(!finished);
   } catch (err) {
     // Stopped by a disconnect, which also fails the requests in flight.
