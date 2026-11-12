@@ -11,6 +11,7 @@ import {
   type Stats,
 } from "ssh2";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -207,6 +208,12 @@ export function disconnect(sessionId: string): void {
   session.shellStream?.end();
   session.client.end();
   sessions.delete(sessionId);
+  for (const [id, upload] of uploads) {
+    if (upload.sessionId === sessionId) cancelUpload(id);
+  }
+  for (const [id, download] of downloads) {
+    if (download.sessionId === sessionId) cancelDownload(id);
+  }
 }
 
 export function disconnectAll(): void {
@@ -230,6 +237,7 @@ function getSftp(session: Session): Promise<SFTPWrapper> {
     session.client.sftp((err, sftp) => {
       if (err) return reject(err);
       const forget = () => {
+        closedChannels.add(sftp);
         if (session.sftp === pending) session.sftp = null;
       };
       sftp.on("close", forget).on("end", forget).on("error", forget);
@@ -250,6 +258,50 @@ function call<T>(
   return new Promise((resolve, reject) => {
     run((err, value) => (err ? reject(err) : resolve(value as T)));
   });
+}
+
+// SFTP channels that have closed: the connection dropped or was closed.
+const closedChannels = new WeakSet<SFTPWrapper>();
+const CONNECTION_LOST = "The connection to the server was lost.";
+
+// call() for a request on `sftp`. Requests waiting for an answer fail when
+// the channel closes, but ssh2 never answers one made after that, so it fails
+// at once instead of waiting forever.
+function sftpCall<T>(
+  sftp: SFTPWrapper,
+  run: (done: (err: Error | null | undefined, value?: T) => void) => void
+): Promise<T> {
+  if (closedChannels.has(sftp)) return Promise.reject(new Error(CONNECTION_LOST));
+  return call(run);
+}
+
+// Closes a remote file or folder handle, without waiting for the answer,
+// which never comes if the connection has dropped.
+function closeHandle(sftp: SFTPWrapper, handle: Buffer) {
+  if (!closedChannels.has(sftp)) sftp.close(handle, () => {});
+}
+
+const SFTP_EOF = 1;
+
+// Everything in a remote folder, like ssh2's readdir(path), but a lost
+// connection fails it instead of leaving it waiting (ssh2 first waits for the
+// folder to close).
+async function readFolder(sftp: SFTPWrapper, remotePath: string): Promise<FileEntryWithStats[]> {
+  const handle = await sftpCall<Buffer>(sftp, (done) => sftp.opendir(remotePath, done));
+  try {
+    const entries: FileEntryWithStats[] = [];
+    for (;;) {
+      try {
+        const list = await sftpCall<FileEntryWithStats[]>(sftp, (done) => sftp.readdir(handle, done));
+        for (const entry of list) entries.push(entry);
+      } catch (err) {
+        if ((err as { code?: unknown }).code === SFTP_EOF) return entries;
+        throw err;
+      }
+    }
+  } finally {
+    closeHandle(sftp, handle);
+  }
 }
 
 const S_IFMT = 0o170000;
@@ -292,22 +344,956 @@ export async function listDirectory(
   }));
 }
 
-export async function downloadFile(
-  sessionId: string,
-  remotePath: string,
-  localPath: string
-): Promise<void> {
-  const sftp = await getSftp(sessionOrThrow(sessionId));
-  await call<void>((done) => sftp.fastGet(remotePath, localPath, done));
+// --- Uploading files and folders ---
+//
+// Dragged in from Finder, or chosen with Upload file / Upload folder. In two
+// steps: prepareUpload() looks at the items and at what's already on the
+// server without changing anything, so the user can be asked before anything
+// is replaced; startUpload() then sends everything.
+
+// Finder's folder view settings. Never wanted on a server, and a web server
+// would hand out the folder's file list with them.
+const SKIPPED_NAMES = new Set([".DS_Store"]);
+
+// Files sent at the same time. Helps most with many small files, where each
+// one costs a few round trips to the server.
+const UPLOAD_CONCURRENCY = 4;
+
+interface UploadFolder {
+  remotePath: string;
+  display: string; // relative to the destination folder, e.g. "build/static"
 }
 
-export async function uploadFile(
-  sessionId: string,
-  localPath: string,
+interface UploadFile extends UploadFolder {
+  localPath: string;
+  size: number;
+}
+
+interface Upload {
+  sessionId: string;
+  folders: UploadFolder[]; // parents before their subfolders
+  files: UploadFile[];
+  bytesTotal: number;
+  state: "ready" | "running" | "stopping";
+}
+
+const uploads = new Map<string, Upload>();
+
+export interface UploadItem {
+  name: string;
+  isDirectory: boolean;
+  // Already in the destination folder: a file will be replaced, a folder
+  // merged (files with the same names replaced, the rest kept).
+  exists: boolean;
+}
+
+export interface UploadSummary {
+  id: string;
+  items: UploadItem[];
+  filesTotal: number;
+  bytesTotal: number;
+  // Inside the uploaded folders, but not uploaded: symbolic links (as with
+  // OpenSSH's `sftp put -r`) and special files such as sockets.
+  skipped: string[];
+}
+
+export interface UploadProgress {
+  filesDone: number;
+  filesTotal: number;
+  bytesDone: number;
+  bytesTotal: number;
+  current: string | null; // the file started last
+}
+
+export interface UploadResult {
+  filesDone: number;
+  stopped: boolean; // by the user, before everything was sent
+}
+
+// "EACCES: permission denied, scandir '/Users/…'" → "permission denied".
+// SFTP errors already read like "Permission denied".
+function errorText(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && message.startsWith(`${code}: `)) {
+    return message.slice(code.length + 2).replace(/, \w+ '.*'$/s, "");
+  }
+  return message;
+}
+
+// What's at a remote path, following symbolic links, or null if nothing is.
+async function remoteType(
+  sftp: SFTPWrapper,
   remotePath: string
-): Promise<void> {
-  const sftp = await getSftp(sessionOrThrow(sessionId));
-  await call<void>((done) => sftp.fastPut(localPath, remotePath, done));
+): Promise<RemoteFileType | null> {
+  try {
+    const attrs = await call<Stats>((done) => sftp.stat(remotePath, done));
+    return fileType(attrs.mode);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === SFTP_NO_SUCH_FILE) return null;
+    throw err;
+  }
+}
+
+// `localPaths` come from the open panel (see ipc-handlers.ts), or from the
+// preload, which reads them off dropped File objects; a File that isn't on
+// disk (e.g. from a web page) has an empty one.
+export async function prepareUpload(
+  sessionId: string,
+  localPaths: string[],
+  remoteDir: string
+): Promise<UploadSummary> {
+  const session = sessionOrThrow(sessionId);
+  checkPath(remoteDir);
+  if (!Array.isArray(localPaths) || localPaths.length === 0) {
+    throw new Error("Nothing to upload");
+  }
+  if (
+    localPaths.some(
+      (p) => typeof p !== "string" || !path.isAbsolute(p) || p.includes("\0")
+    )
+  ) {
+    throw new Error("Only files and folders on this Mac can be uploaded. Drag them from Finder.");
+  }
+
+  const upload: Upload = {
+    sessionId,
+    folders: [],
+    files: [],
+    bytesTotal: 0,
+    state: "ready",
+  };
+  const items: UploadItem[] = [];
+  const skipped: string[] = [];
+
+  const addFile = (localPath: string, remotePath: string, display: string, size: number) => {
+    upload.files.push({ localPath, remotePath, display, size });
+    upload.bytesTotal += size;
+  };
+
+  // Adds a folder and everything inside it. lstat-based (Dirent) types, so
+  // symbolic links inside are skipped rather than followed.
+  async function addFolder(localPath: string, remotePath: string, display: string) {
+    upload.folders.push({ remotePath, display });
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(localPath, { withFileTypes: true });
+    } catch (err) {
+      throw new Error(`Couldn't read “${display}”: ${errorText(err)}`);
+    }
+    for (const entry of entries) {
+      if (SKIPPED_NAMES.has(entry.name)) continue;
+      const childLocal = path.join(localPath, entry.name);
+      const childRemote = path.posix.join(remotePath, entry.name);
+      const childDisplay = `${display}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await addFolder(childLocal, childRemote, childDisplay);
+      } else if (entry.isFile()) {
+        let size: number;
+        try {
+          ({ size } = await fs.promises.lstat(childLocal));
+        } catch (err) {
+          throw new Error(`Couldn't read “${childDisplay}”: ${errorText(err)}`);
+        }
+        addFile(childLocal, childRemote, childDisplay, size);
+      } else {
+        skipped.push(childDisplay);
+      }
+    }
+  }
+
+  for (const localPath of localPaths) {
+    const name = path.basename(localPath);
+    if (!name || name === "." || name === "..") {
+      throw new Error(`“${localPath}” can't be uploaded`);
+    }
+    if (items.some((item) => item.name === name)) {
+      throw new Error(`Two of the items are named “${name}”. Upload them separately.`);
+    }
+    // stat, not lstat: an item dropped by itself is uploaded even if it's a
+    // symbolic link (also like `sftp put`).
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(localPath);
+    } catch (err) {
+      throw new Error(`Couldn't read “${name}”: ${errorText(err)}`);
+    }
+    const remotePath = path.posix.join(remoteDir, name);
+    if (stats.isDirectory()) {
+      await addFolder(localPath, remotePath, name);
+    } else if (stats.isFile()) {
+      addFile(localPath, remotePath, name, stats.size);
+    } else {
+      throw new Error(`“${name}” isn't a file or folder, so it can't be uploaded`);
+    }
+    items.push({ name, isDirectory: stats.isDirectory(), exists: false });
+  }
+
+  // A file can't replace a folder or the other way round, so refuse that
+  // now rather than partway through.
+  const sftp = await getSftp(session);
+  await Promise.all(
+    items.map(async (item) => {
+      const type = await remoteType(sftp, path.posix.join(remoteDir, item.name));
+      if (type === null) return;
+      if ((type === "directory") !== item.isDirectory) {
+        const [mine, theirs] = item.isDirectory ? ["folder", "file"] : ["file", "folder"];
+        throw new Error(
+          `There's already a ${theirs} named “${item.name}” in this folder on the server, so your ${mine} can't be uploaded. Rename one of them first.`
+        );
+      }
+      item.exists = true;
+    })
+  );
+
+  const id = crypto.randomUUID();
+  uploads.set(id, upload);
+  return {
+    id,
+    items,
+    filesTotal: upload.files.length,
+    bytesTotal: upload.bytesTotal,
+    skipped,
+  };
+}
+
+// A folder that's already there is used as it is, keeping its other files.
+async function makeUploadFolder(sftp: SFTPWrapper, folder: UploadFolder) {
+  try {
+    await call<void>((done) => sftp.mkdir(folder.remotePath, done));
+  } catch (err) {
+    const type = await remoteType(sftp, folder.remotePath).catch(() => null);
+    if (type === "directory") return;
+    throw new Error(
+      type
+        ? `Couldn't create the folder “${folder.display}”: a file with that name is in the way.`
+        : `Couldn't create the folder “${folder.display}”: ${errorText(err)}`
+    );
+  }
+}
+
+// Sends a prepared upload. Stops at the first error, which names the file.
+export async function startUpload(
+  uploadId: string,
+  onProgress: (progress: UploadProgress) => void
+): Promise<UploadResult> {
+  const upload = uploads.get(uploadId);
+  if (!upload || upload.state !== "ready") throw new Error("Unknown upload");
+  upload.state = "running";
+  try {
+    const sftp = await getSftp(sessionOrThrow(upload.sessionId));
+    const { folders, files } = upload;
+    const keepGoing = () => upload.state === "running";
+
+    let foldersDone = 0;
+    let filesDone = 0;
+    let bytesOfFilesDone = 0;
+    const inFlight = new Map<UploadFile, number>(); // bytes sent so far
+    let current: string | null = null;
+    let lastReport = 0;
+    const report = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastReport < 100) return; // ~10 updates a second
+      lastReport = now;
+      let bytesDone = bytesOfFilesDone;
+      for (const sent of inFlight.values()) bytesDone += sent;
+      onProgress({
+        filesDone,
+        filesTotal: files.length,
+        bytesDone,
+        bytesTotal: upload.bytesTotal,
+        current,
+      });
+    };
+
+    for (const folder of folders) {
+      if (!keepGoing()) break;
+      current = folder.display;
+      report();
+      await makeUploadFolder(sftp, folder);
+      foldersDone++;
+    }
+
+    let next = 0;
+    let failure: Error | null = null;
+    // Each worker sends one file at a time until none are left. On an error
+    // or Stop, the others finish the file they're on and then end, so nothing
+    // is still being written once this returns.
+    const worker = async () => {
+      while (keepGoing() && !failure && next < files.length) {
+        const file = files[next++];
+        current = file.display;
+        inFlight.set(file, 0);
+        report();
+        try {
+          await call<void>((done) =>
+            sftp.fastPut(
+              file.localPath,
+              file.remotePath,
+              {
+                step: (sent) => {
+                  inFlight.set(file, sent);
+                  report();
+                },
+              },
+              done
+            )
+          );
+        } catch (err) {
+          failure ??= new Error(`Couldn't upload “${file.display}”: ${errorText(err)}`);
+          return;
+        } finally {
+          inFlight.delete(file);
+        }
+        filesDone++;
+        bytesOfFilesDone += file.size;
+        report();
+      }
+    };
+    await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+    // Exact final counts, also after an error (the window says how many
+    // files made it). IPC keeps order, so this arrives before the result.
+    current = null;
+    report(true);
+    if (failure) throw failure;
+    return {
+      filesDone,
+      stopped: foldersDone < folders.length || filesDone < files.length,
+    };
+  } finally {
+    uploads.delete(uploadId);
+  }
+}
+
+// Stops a running upload once the files being sent right now are done (so
+// no file is left half-written), or forgets one that hasn't started.
+export function cancelUpload(uploadId: string): void {
+  const upload = uploads.get(uploadId);
+  if (!upload) return;
+  if (upload.state === "ready") uploads.delete(uploadId);
+  else upload.state = "stopping";
+}
+
+// --- Downloading files and folders, with progress ---
+//
+// In three steps, so the user is asked everything before anything is saved:
+// prepareDownload() asks where to save the file or folder (and the window
+// then asks before adding to a folder that's already there); scanDownload()
+// lists everything inside a folder; startDownload() fetches it all. Stop
+// takes effect at once.
+
+interface DownloadFolder {
+  localPath: string;
+  display: string; // relative to where it's saved, e.g. "backup/logs"
+}
+
+interface DownloadFile extends DownloadFolder {
+  remotePath: string;
+  size: number; // when it was listed; files on a live server can change
+}
+
+interface ScanFolder extends DownloadFolder {
+  remotePath: string;
+}
+
+interface Download {
+  sessionId: string;
+  remotePath: string;
+  localPath: string; // of the file or folder
+  isDirectory: boolean;
+  folders: DownloadFolder[]; // parents before their subfolders
+  files: DownloadFile[];
+  bytesTotal: number;
+  skipped: SkippedItem[];
+  // "chosen": a folder whose contents haven't been listed yet.
+  state: "chosen" | "scanning" | "ready" | "running" | "stopping";
+}
+
+const downloads = new Map<string, Download>();
+// Where finished downloads were saved, for Show in Finder.
+const savedDownloads = new Map<string, string>();
+
+// Inside a downloaded folder, but not saved.
+export interface SkippedItem {
+  path: string; // relative to where it's saved; folders end in "/"
+  reason: string;
+}
+
+export interface DownloadTarget {
+  id: string;
+  name: string;
+  isDirectory: boolean;
+  savedAs: string; // where it's going, with "~" for the home folder
+  // A folder with this name is already there. The downloaded files are added
+  // to it, replacing any with the same names, so the window asks first.
+  exists: boolean;
+}
+
+export interface DownloadSummary {
+  filesTotal: number;
+  bytesTotal: number;
+}
+
+export interface DownloadScanProgress {
+  filesFound: number;
+  bytesFound: number;
+}
+
+export interface DownloadProgress {
+  filesDone: number;
+  filesTotal: number;
+  bytesDone: number;
+  bytesTotal: number;
+  current: string | null; // the file data came in for last
+}
+
+export interface DownloadResult {
+  filesDone: number;
+  bytesDone: number;
+  stopped: boolean; // by the user, before everything was saved
+  skipped: SkippedItem[];
+}
+
+// As in ssh2's fastGet: 32 KB requests, at most 64 of them waiting for the
+// server at once (here over all the files being fetched).
+const DOWNLOAD_CHUNK_SIZE = 32 * 1024;
+const DOWNLOAD_REQUESTS = 64;
+// Files fetched at the same time, and folders listed at the same time. Helps
+// most with many small files, where each one costs a few round trips.
+const DOWNLOAD_CONCURRENCY = 8;
+const SCAN_CONCURRENCY = 8;
+
+// Files inside a downloaded folder are created, or emptied if already there,
+// but never written through a symbolic link, which could point anywhere.
+const FOLDER_FILE_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+
+// The server's file got shorter while it was being downloaded.
+class FileShrank extends Error {}
+
+// Why an item inside a folder can't be downloaded, if the problem is with
+// just that item: it was deleted since the folder was listed, this login may
+// not read it, or it changed while downloading. These skip the item. Null
+// for anything else (a full disk, a lost connection…), which stops the whole
+// download.
+function itemProblem(err: unknown): string | null {
+  if (err instanceof FileShrank) return "it changed on the server while downloading";
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === SFTP_NO_SUCH_FILE) return "it's no longer on the server";
+  if (code === SFTP_PERMISSION_DENIED) return "permission denied";
+  return null;
+}
+
+// A name from a folder listing that can't lead outside the folder when
+// saved. Servers never send others, so one that does isn't trusted.
+function isPlainName(name: string): boolean {
+  return (
+    name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0")
+  );
+}
+
+// Names a Mac's disk sees as the same: unless set up otherwise, it ignores
+// upper and lower case, and how accented letters are encoded.
+function macName(name: string): string {
+  return name.normalize("NFD").toLowerCase();
+}
+
+// "/Users/me/Downloads/x" → "~/Downloads/x".
+function homeRelative(localPath: string): string {
+  const home = os.homedir();
+  return localPath.startsWith(`${home}/`) ? `~${localPath.slice(home.length)}` : localPath;
+}
+
+// Buffers for read requests: one for each request waiting for the server.
+// take() waits while all are in use, which caps the requests in flight over
+// all the files being fetched, so Stop only waits for those (2 MB at most).
+// Buffers go to the waiting file that was listed first (lowest `priority`):
+// files then finish one after another rather than all near the end, so Stop
+// keeps all but the last few; small ones still go several at a time.
+interface ReadBuffers {
+  take(priority: number): Promise<Buffer>;
+  give(buffer: Buffer): void;
+}
+
+function readBuffers(count: number): ReadBuffers {
+  const free: Buffer[] = [];
+  const waiting: { priority: number; resolve: (buffer: Buffer) => void }[] = [];
+  let made = 0;
+  return {
+    take(priority) {
+      let buffer = free.pop();
+      if (!buffer && made < count) {
+        made++;
+        buffer = Buffer.allocUnsafe(DOWNLOAD_CHUNK_SIZE);
+      }
+      if (buffer) return Promise.resolve(buffer);
+      return new Promise((resolve) => waiting.push({ priority, resolve }));
+    },
+    give(buffer) {
+      if (waiting.length === 0) {
+        free.push(buffer);
+        return;
+      }
+      let first = 0; // the earliest of the highest priority
+      for (let i = 1; i < waiting.length; i++) {
+        if (waiting[i].priority < waiting[first].priority) first = i;
+      }
+      waiting.splice(first, 1)[0].resolve(buffer);
+    },
+  };
+}
+
+// Opens the local file to save into (creating or emptying it), saying what's
+// in the way if that fails.
+async function openLocalFile(localPath: string, flags: string | number) {
+  try {
+    return await fs.promises.open(localPath, flags);
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === "EISDIR") throw new Error("there's a folder with that name in the way");
+    if (code === "ELOOP") throw new Error("there's a symbolic link with that name in the way");
+    throw err;
+  }
+}
+
+// Copies a remote file to a local one, several requests at a time, like
+// ssh2's fastGet, but checking `stopped()` before each new request: stopping
+// then only waits for the requests already sent, and the channel stays
+// usable. (Closing the channel instead relies on the server answering
+// promptly, and in testing it sometimes didn't.) The local file is opened,
+// so created or emptied, only once its data starts to arrive, and is removed
+// again unless all of it does. Resolves with the size, or null if stopped
+// first.
+async function fetchFile(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  localPath: string,
+  localFlags: string | number,
+  buffers: ReadBuffers,
+  priority: number,
+  stopped: () => boolean,
+  onBytes: (received: number) => void
+): Promise<number | null> {
+  const handle = await sftpCall<Buffer>(sftp, (done) => sftp.open(remotePath, "r", done));
+  // Opened by the first worker to get a buffer (see below). Typed with `as`,
+  // since TypeScript can't see it being set inside localFile().
+  let opening = null as Promise<fs.promises.FileHandle> | null;
+  const localFile = () => (opening ??= openLocalFile(localPath, localFlags));
+  let saved = false;
+  try {
+    const { size } = await sftpCall<Stats>(sftp, (done) => sftp.fstat(handle, done));
+    let next = 0; // where the next request starts
+    let received = 0;
+    let failure: Error | null = null;
+    // Each worker keeps one buffer, and one request in flight, until there's
+    // nothing left to ask for.
+    const worker = async () => {
+      if (failure || stopped() || next >= size) return;
+      const buffer = await buffers.take(priority);
+      try {
+        // Again: things may have changed while waiting for the buffer.
+        if (failure || stopped() || next >= size) return;
+        const file = await localFile();
+        while (!failure && !stopped() && next < size) {
+          let position = next;
+          let length = Math.min(DOWNLOAD_CHUNK_SIZE, size - position);
+          next += length;
+          // The server may send less than asked for: ask again for the rest.
+          while (length > 0) {
+            const count = await sftpCall<number>(sftp, (done) =>
+              sftp.read(handle, buffer, 0, length, position, (err, bytesRead) =>
+                done(err, bytesRead)
+              )
+            );
+            if (count === 0) throw new FileShrank("the file got shorter while downloading");
+            await file.write(buffer, 0, count, position);
+            position += count;
+            length -= count;
+            received += count;
+            onBytes(received);
+          }
+        }
+      } catch (err) {
+        failure ??= err instanceof Error ? err : new Error(String(err));
+      } finally {
+        buffers.give(buffer);
+      }
+    };
+    const workers = Math.min(DOWNLOAD_REQUESTS, Math.ceil(size / DOWNLOAD_CHUNK_SIZE));
+    await Promise.all(Array.from({ length: workers }, worker));
+    if (failure) throw failure;
+    if (received < size) return null; // stopped
+    const file = await localFile(); // also for an empty file, with nothing to fetch
+    await file.close();
+    saved = true;
+    return size;
+  } finally {
+    if (opening && !saved) {
+      const file = await opening.catch(() => null);
+      if (file) {
+        await file.close().catch(() => {});
+        await fs.promises.rm(localPath, { force: true }).catch(() => {});
+      }
+    }
+    closeHandle(sftp, handle);
+  }
+}
+
+export async function prepareDownload(
+  sessionId: string,
+  remotePath: string,
+  // Asks the user where to save the file or folder: its local path, or null
+  // if they cancel.
+  chooseLocalPath: (name: string, isDirectory: boolean) => Promise<string | null>
+): Promise<DownloadTarget | null> {
+  const session = sessionOrThrow(sessionId);
+  checkPath(remotePath);
+  const name = path.posix.basename(remotePath);
+  if (!name) throw new Error("The whole server can't be downloaded at once. Download the folders in it instead.");
+  const sftp = await getSftp(session);
+  // stat, not lstat: a symbolic link downloads what it points to.
+  const attrs = await sftpCall<Stats>(sftp, (done) => sftp.stat(remotePath, done));
+  const type = fileType(attrs.mode);
+  if (type !== "file" && type !== "directory") {
+    throw new Error("Only files and folders can be downloaded");
+  }
+  const isDirectory = type === "directory";
+  const localPath = await chooseLocalPath(name, isDirectory);
+  if (!localPath) return null;
+
+  // For a file, the save panel has already asked about replacing one.
+  let exists = false;
+  if (isDirectory) {
+    const stats = await fs.promises.lstat(localPath).catch(() => null);
+    if (stats && !stats.isDirectory()) {
+      throw new Error(
+        `There's already a file named “${name}” there, so the folder can't be saved next to it. Choose another place, or rename the file first.`
+      );
+    }
+    exists = stats !== null;
+  }
+
+  const id = crypto.randomUUID();
+  downloads.set(id, {
+    sessionId,
+    remotePath,
+    localPath,
+    isDirectory,
+    folders: [],
+    files: isDirectory ? [] : [{ remotePath, localPath, display: name, size: attrs.size }],
+    bytesTotal: isDirectory ? 0 : attrs.size,
+    skipped: [],
+    state: isDirectory ? "chosen" : "ready",
+  });
+  return { id, name, isDirectory, savedAs: homeRelative(localPath), exists };
+}
+
+// Lists everything inside a folder being downloaded, several folders at a
+// time. Symbolic links and special files inside aren't downloaded (as with
+// OpenSSH's `sftp get -R`), and neither are subfolders this login can't open.
+// A file needs nothing listing: this resolves at once. Resolves null if
+// stopped first, as the window was closed.
+export async function scanDownload(
+  downloadId: string,
+  onProgress: (progress: DownloadScanProgress) => void
+): Promise<DownloadSummary | null> {
+  const download = downloads.get(downloadId);
+  if (!download || (download.state !== "chosen" && download.state !== "ready")) {
+    throw new Error("Unknown download");
+  }
+  if (download.state === "chosen") {
+    download.state = "scanning";
+    const stopped = () => download.state === "stopping"; // see cancelDownload()
+    try {
+      await listDownloadFolder(download, onProgress);
+    } catch (err) {
+      downloads.delete(downloadId);
+      // Stopped by a disconnect, which also fails the requests in flight.
+      if (stopped()) return null;
+      throw err;
+    }
+    if (stopped()) {
+      downloads.delete(downloadId);
+      return null;
+    }
+    download.state = "ready";
+  }
+  return { filesTotal: download.files.length, bytesTotal: download.bytesTotal };
+}
+
+async function listDownloadFolder(
+  download: Download,
+  onProgress: (progress: DownloadScanProgress) => void
+) {
+  const sftp = await getSftp(sessionOrThrow(download.sessionId));
+  const keepGoing = () => download.state === "scanning";
+  const top: ScanFolder = {
+    remotePath: download.remotePath,
+    localPath: download.localPath,
+    display: path.posix.basename(download.remotePath),
+  };
+  download.folders.push(top);
+  let lastReport = 0;
+  const report = () => {
+    const now = Date.now();
+    if (now - lastReport < 100) return; // ~10 updates a second
+    lastReport = now;
+    onProgress({ filesFound: download.files.length, bytesFound: download.bytesTotal });
+  };
+
+  // Lists one folder, adding what's in it; resolves with its subfolders.
+  const list = async (folder: ScanFolder): Promise<ScanFolder[]> => {
+    let entries: FileEntryWithStats[];
+    try {
+      entries = await readFolder(sftp, folder.remotePath);
+    } catch (err) {
+      const problem = itemProblem(err);
+      if (folder === top || !problem) {
+        throw new Error(`Couldn't open “${folder.display}”: ${errorText(err)}`);
+      }
+      download.skipped.push({ path: `${folder.display}/`, reason: problem });
+      return [];
+    }
+    // In a fixed order, so the same one of two names a Mac can't tell apart
+    // is kept each time.
+    entries.sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
+    const taken = new Map<string, string>(); // macName() → name, of items kept
+    const subfolders: ScanFolder[] = [];
+    for (const { filename: name, attrs: listed } of entries) {
+      const display = `${folder.display}/${name}`;
+      if (!isPlainName(name)) {
+        download.skipped.push({ path: display, reason: "the server sent a name that isn't allowed" });
+        continue;
+      }
+      const remotePath = path.posix.join(folder.remotePath, name);
+      // A server that leaves the type or size out of listings is asked.
+      let attrs = listed;
+      if (typeof attrs.mode !== "number" || typeof attrs.size !== "number") {
+        try {
+          attrs = await sftpCall<Stats>(sftp, (done) => sftp.lstat(remotePath, done));
+        } catch (err) {
+          const problem = itemProblem(err);
+          if (!problem) throw new Error(`Couldn't open “${display}”: ${errorText(err)}`);
+          download.skipped.push({ path: display, reason: problem });
+          continue;
+        }
+      }
+      const type = fileType(attrs.mode);
+      if (type === "symlink" || type === "other") {
+        download.skipped.push({
+          path: display,
+          reason: type === "symlink" ? "symbolic link" : "special file",
+        });
+        continue;
+      }
+      const isDirectory = type === "directory";
+      const other = taken.get(macName(name));
+      if (other !== undefined) {
+        download.skipped.push({
+          path: isDirectory ? `${display}/` : display,
+          reason: `a Mac sees it as the same name as “${other}”`,
+        });
+        continue;
+      }
+      taken.set(macName(name), name);
+      const localPath = path.join(folder.localPath, name);
+      if (isDirectory) {
+        const subfolder = { remotePath, localPath, display };
+        download.folders.push(subfolder);
+        subfolders.push(subfolder);
+      } else {
+        download.files.push({ remotePath, localPath, display, size: attrs.size });
+        download.bytesTotal += attrs.size;
+      }
+    }
+    return subfolders;
+  };
+
+  // Lists folders as they're found, a few at a time, until all are listed, or
+  // one fails, or Stop. Each is added to `download.folders` when its parent is
+  // listed, so parents always come before their subfolders.
+  const pending: ScanFolder[] = [top];
+  let running = 0;
+  let failure: unknown = null;
+  await new Promise<void>((resolve) => {
+    const pump = () => {
+      while (!failure && keepGoing() && pending.length > 0 && running < SCAN_CONCURRENCY) {
+        const folder = pending.pop()!;
+        running++;
+        list(folder)
+          .then(
+            (subfolders) => {
+              pending.push(...subfolders);
+              report();
+            },
+            (err) => {
+              failure ??= closedChannels.has(sftp) ? new Error(CONNECTION_LOST) : err;
+            }
+          )
+          .finally(() => {
+            running--;
+            pump();
+          });
+      }
+      if (running === 0) resolve();
+    };
+    pump();
+  });
+  if (failure) throw failure;
+}
+
+// A folder that's already there is used as it is, keeping what's in it.
+async function makeDownloadFolder(folder: DownloadFolder) {
+  try {
+    await fs.promises.mkdir(folder.localPath);
+  } catch (err) {
+    const stats = await fs.promises.lstat(folder.localPath).catch(() => null);
+    if (stats?.isDirectory()) return;
+    throw new Error(
+      stats
+        ? `Couldn't create the folder “${folder.display}”: there's a file with that name in the way.`
+        : `Couldn't create the folder “${folder.display}”: ${errorText(err)}`
+    );
+  }
+}
+
+// Fetches a prepared download: a folder's subfolders first, then its files,
+// a few at a time. A problem with one file inside a folder (see
+// itemProblem()) skips just that file; anything else stops the download,
+// with an error naming the file.
+//
+// A file goes straight to where the user chose, as before: a temporary file
+// next to it could set off macOS's folder access prompt (Downloads, Desktop,
+// Documents), which the save panel's choice doesn't cover.
+export async function startDownload(
+  downloadId: string,
+  onProgress: (progress: DownloadProgress) => void
+): Promise<DownloadResult> {
+  const download = downloads.get(downloadId);
+  if (!download || download.state !== "ready") throw new Error("Unknown download");
+  download.state = "running";
+  const keepGoing = () => download.state === "running"; // see cancelDownload()
+  const { folders, files } = download;
+  const skipped = [...download.skipped];
+
+  let foldersDone = 0;
+  let filesDone = 0;
+  let filesSkipped = 0;
+  let bytesOfFilesDone = 0;
+  // Less what's skipped, and corrected for files that changed since listed.
+  let bytesTotal = download.bytesTotal;
+  const inFlight = new Map<DownloadFile, number>(); // bytes received so far
+  let current: string | null = null;
+  let lastReport = 0;
+  const report = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastReport < 100) return; // ~10 updates a second
+    lastReport = now;
+    let bytesDone = bytesOfFilesDone;
+    for (const received of inFlight.values()) bytesDone += received;
+    onProgress({ filesDone, filesTotal: files.length, bytesDone, bytesTotal, current });
+  };
+  const result = (stopped: boolean): DownloadResult => ({
+    filesDone,
+    bytesDone: bytesOfFilesDone,
+    stopped,
+    skipped,
+  });
+
+  try {
+    const sftp = await getSftp(sessionOrThrow(download.sessionId));
+    for (const folder of folders) {
+      if (!keepGoing()) break;
+      await makeDownloadFolder(folder);
+      foldersDone++;
+    }
+
+    const buffers = readBuffers(DOWNLOAD_REQUESTS);
+    const localFlags = download.isDirectory ? FOLDER_FILE_FLAGS : "w";
+    let next = 0;
+    let failure: Error | null = null;
+    const stopped = () => !keepGoing() || failure !== null;
+    // Each worker fetches one file at a time until none are left, in the
+    // order they were listed (see readBuffers()). On an error or Stop, the
+    // files being fetched stop too (and their partial files are removed), so
+    // nothing is still being written once this returns.
+    const worker = async () => {
+      while (!stopped() && next < files.length) {
+        const index = next++;
+        const file = files[index];
+        current ??= file.display;
+        inFlight.set(file, 0);
+        report();
+        let size: number | null;
+        try {
+          size = await fetchFile(
+            sftp,
+            file.remotePath,
+            file.localPath,
+            localFlags,
+            buffers,
+            index,
+            stopped,
+            (received) => {
+              // Not the file started last: that one may be waiting its turn.
+              current = file.display;
+              inFlight.set(file, received);
+              report();
+            }
+          );
+        } catch (err) {
+          const problem = download.isDirectory ? itemProblem(err) : null;
+          if (problem && keepGoing()) {
+            skipped.push({ path: file.display, reason: problem });
+            filesSkipped++;
+            bytesTotal -= file.size;
+            continue;
+          }
+          failure ??= closedChannels.has(sftp)
+            ? new Error(CONNECTION_LOST)
+            : new Error(`Couldn't download “${file.display}”: ${errorText(err)}`);
+          return;
+        } finally {
+          inFlight.delete(file);
+        }
+        if (size === null) return; // stopped
+        filesDone++;
+        bytesOfFilesDone += size;
+        bytesTotal += size - file.size;
+        report();
+      }
+    };
+    await Promise.all(Array.from({ length: DOWNLOAD_CONCURRENCY }, worker));
+    // Exact final counts, also after an error (the window says how many
+    // files were saved). IPC keeps order, so this arrives before the result.
+    current = null;
+    report(true);
+    if (failure && keepGoing()) throw failure;
+    const finished =
+      foldersDone === folders.length && filesDone + filesSkipped === files.length;
+    if (finished) savedDownloads.set(downloadId, download.localPath);
+    return result(!finished);
+  } catch (err) {
+    // Stopped by a disconnect, which also fails the requests in flight.
+    if (!keepGoing()) return result(true);
+    throw err;
+  } finally {
+    downloads.delete(downloadId);
+  }
+}
+
+// Stops a download being listed or fetched: at once, apart from the requests
+// already sent. Files already saved are kept; partial ones are removed. Or
+// forgets one that hasn't started.
+export function cancelDownload(downloadId: string): void {
+  const download = downloads.get(downloadId);
+  if (!download) return;
+  if (download.state === "chosen" || download.state === "ready") downloads.delete(downloadId);
+  else download.state = "stopping";
+}
+
+export function savedDownload(downloadId: string): string | null {
+  return savedDownloads.get(downloadId) ?? null;
 }
 
 // --- Properties dialog (WinSCP-style info, permissions and ownership) ---
@@ -483,6 +1469,7 @@ function checkPath(remotePath: unknown): string {
 }
 
 const SFTP_NO_SUCH_FILE = 2;
+const SFTP_PERMISSION_DENIED = 3;
 
 async function pathExists(sftp: SFTPWrapper, remotePath: string): Promise<boolean> {
   try {

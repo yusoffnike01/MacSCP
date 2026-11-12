@@ -18,6 +18,9 @@ On Windows, WinSCP is the go-to tool for looking after servers: browse files, up
 
 - **Terminal and files in one window.** Each server gets an SSH terminal tab and an SFTP file browser tab.
 - **Touch ID before every connection.** Nobody can open your servers from your Mac without your fingerprint.
+- **Upload files and whole folders.** Use **Upload file** or **Upload folder**, or drag them from Finder onto the Files tab.
+- **Download files and whole folders.** Right-click → **Download…**, and a folder comes down with everything inside it.
+- **Transfer progress like WinSCP.** Percentage, time elapsed, time left and speed for uploads and downloads, and a clear "complete" when they finish.
 - **Right-click menus like WinSCP.** Edit, Download, Rename, Delete, Copy Path and Properties.
 - **Properties like WinSCP.** Change permissions (checkboxes or octal), owner and group, for one item or everything inside a folder.
 - **Built-in editor.** Edit files on the server and save with ⌘S. Line endings and file permissions are kept, and you're warned if someone else changed the file in the meantime.
@@ -81,16 +84,28 @@ The **Files** tab shows the files on the server.
 
 - Click a folder to open it, and **↑ Up** to go back.
 - Click a column title (Name, Size, Modified) to sort; click again to reverse.
-- Use **New folder** and **Upload file** at the top.
+- Use **New folder**, **Upload file** and **Upload folder** at the top. Uploads go into the folder you're in, and a folder goes up with everything inside it.
+- You can also drag files or folders from Finder onto the list to upload them.
+- To download, right-click a file or folder and choose **Download…** (or click **Download** at the end of its row). A file asks where to save it; a folder asks which folder on your Mac to save it in, and comes down with everything inside it.
+- Uploads and downloads show a progress window: the percentage done, time elapsed, time left and speed. When the transfer is finished it turns green and says **Upload complete** or **Download complete** (with **Show in Finder** for downloads), and stays until you click OK.
+- **Stop** ends a download at once: files already saved are kept, and any file only partly saved is deleted. An upload stops once the files being sent at that moment are finished, so none is left half-written on the server.
 - Double-click a file to edit it.
+
+If something you upload is already on the server, MacSCP asks before replacing it. A folder is merged: files with the same names are replaced, and any other files already in it are kept. Finder's `.DS_Store` files and symbolic links inside uploaded folders aren't uploaded.
+
+Downloading a folder works the same way: if your Mac already has a folder with that name there, MacSCP asks before adding to it. Some things inside a downloaded folder are left out, and listed when the download is done:
+
+- symbolic links and special files (sockets, pipes, devices)
+- files and folders your login isn't allowed to read, or that were deleted or changed on the server while downloading
+- names that differ only in upper and lower case (`README` and `readme`): your Mac sees them as the same name, so only the first is saved
 
 Right-click for more:
 
 | Right-click on   | You get                                                                  |
 | ---------------- | ------------------------------------------------------------------------ |
 | A file           | Edit · Download… · Rename… · Delete… · Copy Path · Properties…           |
-| A folder         | Open · Rename… · Delete… · Copy Path · Properties…                       |
-| Empty space      | New Folder… · Upload File… · Refresh · Copy Path · Properties…           |
+| A folder         | Open · Download… · Rename… · Delete… · Copy Path · Properties…           |
+| Empty space      | New Folder… · Upload File… · Upload Folder… · Refresh · Copy Path · Properties… |
 | A server (sidebar) | Edit… · Rename… · Delete…                                              |
 
 Deleting always asks first. Deleting a folder removes everything inside it.
@@ -119,7 +134,7 @@ Double-click a text file (or right-click → **Edit**). Save with **⌘S**, clos
 | Properties (permissions, owner)    | Right-click → Properties…                        |
 | Rename / Delete                    | Right-click → Rename… / Delete…                  |
 | Create directory                   | **New folder**, or right-click empty space       |
-| Upload / Download                  | **Upload file** button, or right-click → Download… |
+| Upload / Download                  | **Upload file** / **Upload folder**, or drag from Finder; right-click a file or folder → Download… |
 
 ## Security and privacy
 
@@ -135,7 +150,8 @@ Touch ID protects access *through MacSCP*; it doesn't lock the key file itself. 
 
 - **macOS only.** It relies on Touch ID.
 - **SSH key or password login only.** ssh-agent isn't supported yet, nor are servers that also ask for a one-time code (two-factor login).
-- **One file at a time.** No multi-select, drag and drop, or folder upload yet.
+- **One item at a time.** No multi-select, or dragging files out to Finder, yet.
+- **Transfers don't keep permissions or dates.** Uploaded files get the server's defaults (usually `644`; change them with **Properties…**), and downloaded files get your Mac's.
 - **Not signed by Apple yet.** Build it yourself as shown above. A copy downloaded from someone else will be blocked by macOS.
 
 ## Development

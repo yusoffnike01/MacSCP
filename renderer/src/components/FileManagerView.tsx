@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type DragEvent, type MouseEvent } from "react";
 import type { ContextMenuItem, RemoteEntry } from "../types";
 import { formatSize } from "../format";
 import { PropertiesDialog } from "./PropertiesDialog";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { FileEditor } from "./FileEditor";
+import { UploadDialog, type UploadSource } from "./UploadDialog";
+import { DownloadDialog } from "./DownloadDialog";
 
 function joinPath(dir: string, name: string): string {
   return `${dir.replace(/\/+$/, "")}/${name}`;
@@ -49,12 +51,17 @@ function sortEntries(entries: RemoteEntry[], { key, dir }: SortState): RemoteEnt
   });
 }
 
+const uploadButton =
+  "rounded-md bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent hover:opacity-80";
+
 type OpenDialog =
   | { kind: "properties"; path: string }
   | { kind: "edit"; path: string }
   | { kind: "rename"; entry: RemoteEntry }
   | { kind: "delete"; entry: RemoteEntry }
-  | { kind: "new-folder" };
+  | { kind: "new-folder" }
+  | { kind: "upload"; source: UploadSource; remoteDir: string }
+  | { kind: "download"; path: string };
 
 export function FileManagerView({ sessionId }: { sessionId: string }) {
   const [currentPath, setCurrentPath] = useState("/root");
@@ -65,6 +72,8 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
   const [dialog, setDialog] = useState<OpenDialog | null>(null);
   const [sort, setSort] = useState<SortState>(loadSort);
   const sortedEntries = useMemo(() => sortEntries(entries, sort), [entries, sort]);
+  // Files are being dragged over the panel from Finder.
+  const [dropActive, setDropActive] = useState(false);
 
   useEffect(() => {
     try {
@@ -119,14 +128,39 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
     load("/" + parts.join("/"));
   }
 
-  async function handleDownload(entry: RemoteEntry) {
-    if (entry.isDirectory) return;
-    await window.api.sftp.download(sessionId, joinPath(currentPath, entry.name));
+  // A file, or a folder with everything inside it.
+  function handleDownload(entry: RemoteEntry) {
+    setDialog({ kind: "download", path: joinPath(currentPath, entry.name) });
   }
 
-  async function handleUpload() {
-    await window.api.sftp.upload(sessionId, currentPath);
-    load(currentPath);
+  // Upload file / Upload folder: the open panel, then the same upload window
+  // as a drop.
+  function pickUpload(what: "files" | "folders") {
+    setDialog({ kind: "upload", source: { kind: "pick", what }, remoteDir: currentPath });
+  }
+
+  // Files and folders from Finder (not dragged text or links), dropped
+  // anywhere on the panel, go into the folder being shown. Not while a dialog
+  // is open, or while another folder is loading.
+  function acceptsDrag(event: DragEvent) {
+    return !dialog && !loading && event.dataTransfer.types.includes("Files");
+  }
+
+  function handleDragOver(event: DragEvent) {
+    if (!acceptsDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  }
+
+  function handleDrop(event: DragEvent) {
+    setDropActive(false);
+    if (!acceptsDrag(event)) return;
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) {
+      setDialog({ kind: "upload", source: { kind: "drop", files }, remoteDir: currentPath });
+    }
   }
 
   function closeDialog() {
@@ -150,12 +184,8 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
     setSelected(entry.name);
     const fullPath = joinPath(currentPath, entry.name);
     const items: ContextMenuItem[] = [
-      ...(entry.isDirectory
-        ? [{ id: "open", label: "Open" }]
-        : [
-            { id: "edit", label: "Edit" },
-            { id: "download", label: "Download…" },
-          ]),
+      entry.isDirectory ? { id: "open", label: "Open" } : { id: "edit", label: "Edit" },
+      { id: "download", label: "Download…" },
       { type: "separator" },
       { id: "rename", label: "Rename…" },
       { id: "delete", label: "Delete…" },
@@ -195,7 +225,8 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
     setSelected(null);
     const choice = await window.api.ui.showContextMenu([
       { id: "new-folder", label: "New Folder…" },
-      { id: "upload", label: "Upload File…" },
+      { id: "upload-files", label: "Upload File…" },
+      { id: "upload-folders", label: "Upload Folder…" },
       { id: "refresh", label: "Refresh" },
       { type: "separator" },
       { id: "copy-path", label: "Copy Path" },
@@ -206,8 +237,11 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
       case "new-folder":
         setDialog({ kind: "new-folder" });
         break;
-      case "upload":
-        handleUpload();
+      case "upload-files":
+        pickUpload("files");
+        break;
+      case "upload-folders":
+        pickUpload("folders");
         break;
       case "refresh":
         load(currentPath);
@@ -222,7 +256,12 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="relative flex h-full flex-col"
+      onDragEnter={handleDragOver}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5">
         <button
           onClick={navigateUp}
@@ -240,11 +279,11 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
         >
           New folder
         </button>
-        <button
-          onClick={handleUpload}
-          className="rounded-md bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent hover:opacity-80"
-        >
+        <button onClick={() => pickUpload("files")} className={uploadButton}>
           Upload file
+        </button>
+        <button onClick={() => pickUpload("folders")} className={uploadButton}>
+          Upload folder
         </button>
       </div>
 
@@ -307,20 +346,55 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
                     {new Date(entry.modifiedAt).toLocaleString()}
                   </td>
                   <td className="px-4 py-2 text-right">
-                    {!entry.isDirectory && (
-                      <button
-                        onClick={() => handleDownload(entry)}
-                        className="text-xs text-accent hover:underline"
-                      >
-                        Download
-                      </button>
-                    )}
+                    <button
+                      onClick={() => handleDownload(entry)}
+                      className="text-xs text-accent hover:underline"
+                    >
+                      Download
+                    </button>
                   </td>
                 </tr>
               ))}
           </tbody>
         </table>
       </div>
+
+      {/* Covers the whole panel while dragging, so it is the only drag target
+          (its contents ignore the pointer) and dragleave fires only when the
+          pointer leaves the panel. Mouse events don't arrive during a drag, so
+          a mouse move means the drag is over, should it have ended without a
+          dragleave; the overlay must never be left blocking the list. */}
+      {dropActive && (
+        <div
+          className="absolute inset-0 z-40 bg-surface-0/70 p-3"
+          onDragLeave={() => setDropActive(false)}
+          onMouseMove={() => setDropActive(false)}
+        >
+          <div className="pointer-events-none flex h-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-accent bg-accent-soft px-6 text-center">
+            <p className="text-sm font-medium text-text-primary">Drop to upload</p>
+            <p className="max-w-full truncate font-mono text-xs text-text-secondary">
+              to {currentPath}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {dialog?.kind === "upload" && (
+        <UploadDialog
+          sessionId={sessionId}
+          source={dialog.source}
+          remoteDir={dialog.remoteDir}
+          onCancel={closeDialog}
+          onDone={(select) => {
+            closeDialog();
+            load(dialog.remoteDir, select);
+          }}
+        />
+      )}
+
+      {dialog?.kind === "download" && (
+        <DownloadDialog sessionId={sessionId} remotePath={dialog.path} onClose={closeDialog} />
+      )}
 
       {dialog?.kind === "properties" && (
         <PropertiesDialog
