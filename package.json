@@ -21,7 +21,7 @@
     "build:renderer": "cd renderer && npm run build",
     "build:electron": "tsc -p electron/tsconfig.json",
     "build:touchid": "cd electron/touchid && swiftc -O TouchIDAuth.swift -o touchid-auth && chmod 700 touchid-auth",
-    "rebuild:native": "electron-rebuild -f -w better-sqlite3,keytar",
+    "rebuild:native": "electron-rebuild -f -o better-sqlite3,keytar",
     "build": "npm run build:touchid && npm run build:renderer && npm run build:electron && npm run rebuild:native",
     "start": "npm run build && electron .",
     "dist": "npm run build:touchid && npm run build:renderer && npm run build:electron && electron-builder --mac",

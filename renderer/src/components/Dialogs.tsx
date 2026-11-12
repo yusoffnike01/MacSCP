@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { errorMessage } from "../format";
+import { errorMessage, formatDuration, formatSize } from "../format";
 
 function useEscape(onCancel: () => void) {
   useEffect(() => {
@@ -11,7 +11,7 @@ function useEscape(onCancel: () => void) {
   }, [onCancel]);
 }
 
-function Modal({ title, children }: { title: string; children: ReactNode }) {
+export function Modal({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div
@@ -29,12 +29,123 @@ function Modal({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-const secondaryButton =
-  "rounded-lg px-4 py-2 text-sm text-text-secondary hover:text-text-primary";
-const primaryButton =
+export const secondaryButton =
+  "rounded-lg px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50";
+export const primaryButton =
   "rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface-0 transition-opacity hover:opacity-90 disabled:opacity-50";
 const dangerButton =
   "rounded-lg bg-danger px-4 py-2 text-sm font-medium text-surface-0 transition-opacity hover:opacity-90 disabled:opacity-50";
+
+// Progress bar and percentage for uploads and downloads. It reaches 100% (and
+// turns green) only once `complete`, so a transfer that's nearly there never
+// looks finished.
+export function TransferProgress({
+  fraction,
+  complete = false,
+  children,
+}: {
+  fraction: number; // 0 to 1
+  complete?: boolean;
+  children: ReactNode; // how much, e.g. "3 of 10 files · 1.2 MB of 4.0 MB"
+}) {
+  const percent = complete
+    ? 100
+    : Math.min(99, Math.floor(Math.max(0, Number.isFinite(fraction) ? fraction : 0) * 100));
+  return (
+    <div>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="h-2 overflow-hidden rounded-full bg-surface-3"
+      >
+        <div
+          className={`h-full rounded-full transition-[width] duration-150 ${
+            complete ? "bg-success" : "bg-accent"
+          }`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <div className="mt-3 flex items-baseline justify-between gap-4">
+        <p className="min-w-0 truncate text-xs text-text-secondary">{children}</p>
+        <p
+          className={`text-sm font-semibold tabular-nums ${
+            complete ? "text-success" : "text-text-primary"
+          }`}
+        >
+          {percent}%
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Time elapsed, time left and speed, like WinSCP's transfer window. Updates
+// every second while running; once `endedAt` is set, shows how long the
+// transfer took and its average speed instead.
+export function TransferTimes({
+  startedAt,
+  measuredAt,
+  endedAt,
+  bytesDone,
+  bytesTotal,
+}: {
+  startedAt: number;
+  measuredAt: number | null; // when `bytesDone` was reported
+  endedAt?: number;
+  bytesDone: number;
+  bytesTotal: number;
+}) {
+  const ended = endedAt !== undefined;
+  // Keeps "Time elapsed" ticking, even while nothing is coming through.
+  const [now, setNow] = useState(startedAt);
+  useEffect(() => {
+    if (ended) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [ended]);
+
+  const elapsed = Math.max(0, (endedAt ?? Math.max(now, measuredAt ?? 0)) - startedAt);
+  // The average over the whole transfer, which is steadier than the speed of
+  // the moment. While running, not before a second has passed: too little
+  // to go on.
+  const measured = (endedAt ?? measuredAt ?? startedAt) - startedAt;
+  const speed =
+    bytesDone > 0 && measured >= (ended ? 1 : 1000) ? (bytesDone / measured) * 1000 : null;
+  const speedText = speed === null ? "—" : `${formatSize(speed)}/s`;
+  const items = ended
+    ? [
+        ["Time taken", formatDuration(elapsed)],
+        ["Average speed", speedText],
+      ]
+    : [
+        ["Time elapsed", formatDuration(elapsed)],
+        // Rounded up, so it never says 0:00 while there's still some to go.
+        [
+          "Time left",
+          speed === null
+            ? "—"
+            : formatDuration((Math.max(0, bytesTotal - bytesDone) / speed) * 1000 + 999),
+        ],
+        ["Speed", speedText],
+      ];
+
+  return (
+    <dl
+      className={`mt-4 grid gap-3 rounded-lg bg-surface-2 px-3 py-2.5 ${
+        ended ? "grid-cols-2" : "grid-cols-3"
+      }`}
+    >
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <dt className="text-[11px] text-text-muted">{label}</dt>
+          <dd className="mt-0.5 text-sm font-medium tabular-nums text-text-primary">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 // Asks for a name (rename, new folder). `validate` returns a problem to show,
 // or null; `onSubmit` errors are shown in the dialog, which stays open.

@@ -4,11 +4,13 @@
 // it has no direct access to fs, keytar, or ssh2.
 
 import {
+  app,
   ipcMain,
   dialog,
   clipboard,
   Menu,
   BrowserWindow,
+  shell,
   type MenuItemConstructorOptions,
   type MessageBoxOptions,
   type OpenDialogOptions,
@@ -26,6 +28,8 @@ import {
   type ConnectionChanges,
   type ServerConnection,
 } from "./db";
+import crypto from "node:crypto";
+import path from "node:path";
 import { requestTouchId } from "./touchid";
 import { getSecret, setSecret, deleteSecret, type SecretKind } from "./keychain";
 import * as ssh from "./ssh";
@@ -267,32 +271,108 @@ export function registerIpcHandlers() {
     return ssh.listDirectory(sessionId, remotePath);
   });
 
+  // Download with progress: where to save it, then (for a folder) the
+  // listing, then the transfer (see ssh.prepareDownload).
+  // Where the last folder was saved, offered first next time.
+  let downloadFolder: string | null = null;
+
   ipcMain.handle(
-    "sftp:download",
-    async (evt, sessionId: string, remotePath: string) => {
-      const result = await showSaveDialog(evt.sender, {
-        defaultPath: remotePath.split("/").pop(),
+    "sftp:prepare-download",
+    (evt, sessionId: string, remotePath: string) => {
+      return ssh.prepareDownload(sessionId, remotePath, async (name, isDirectory) => {
+        if (!isDirectory) {
+          const result = await showSaveDialog(evt.sender, { defaultPath: name });
+          return result.canceled || !result.filePath ? null : result.filePath;
+        }
+        // A folder is saved, under its own name, in a folder the user picks.
+        const result = await showOpenDialog(evt.sender, {
+          message: `Choose where to save the folder “${name}”`,
+          buttonLabel: "Download",
+          defaultPath: downloadFolder ?? app.getPath("downloads"),
+          properties: ["openDirectory", "createDirectory"],
+        });
+        if (result.canceled || result.filePaths.length === 0) return null;
+        downloadFolder = result.filePaths[0];
+        return path.join(downloadFolder, name);
       });
-      if (result.canceled || !result.filePath) return null;
-      await ssh.downloadFile(sessionId, remotePath, result.filePath);
-      return result.filePath;
+    }
+  );
+
+  ipcMain.handle("sftp:scan-download", (evt, downloadId: string) => {
+    const sender = evt.sender;
+    return ssh.scanDownload(downloadId, (progress) => {
+      if (!sender.isDestroyed()) sender.send(`sftp:download-scan:${downloadId}`, progress);
+    });
+  });
+
+  ipcMain.handle("sftp:start-download", (evt, downloadId: string) => {
+    const sender = evt.sender;
+    return ssh.startDownload(downloadId, (progress) => {
+      if (!sender.isDestroyed()) sender.send(`sftp:download-progress:${downloadId}`, progress);
+    });
+  });
+
+  ipcMain.handle("sftp:cancel-download", (_evt, downloadId: string) => {
+    ssh.cancelDownload(downloadId);
+  });
+
+  // Show in Finder, for a finished download. By id, so the page never names
+  // a local path itself.
+  ipcMain.handle("sftp:show-download", (_evt, downloadId: string) => {
+    const localPath = ssh.savedDownload(downloadId);
+    if (localPath) shell.showItemInFolder(localPath);
+  });
+
+  // Files and folders dragged in from Finder (see ssh.prepareUpload).
+  ipcMain.handle(
+    "sftp:prepare-upload",
+    (_evt, sessionId: string, localPaths: string[], remoteDir: string) => {
+      return ssh.prepareUpload(sessionId, localPaths, remoteDir);
+    }
+  );
+
+  // Upload file / Upload folder: the open panel, then the same upload as a
+  // drop. What was chosen stays here, so the page never names local paths
+  // itself (see preload.ts): it gets the names to show, and an id to prepare
+  // the upload with.
+  const pickedUploads = new Map<string, string[]>();
+
+  ipcMain.handle(
+    "sftp:pick-upload",
+    async (evt, what: "files" | "folders", remoteDir: string) => {
+      const folders = what === "folders";
+      const result = await showOpenDialog(evt.sender, {
+        message: `Choose ${folders ? "folders" : "files"} to upload to ${remoteDir}`,
+        buttonLabel: "Upload",
+        properties: [folders ? "openDirectory" : "openFile", "multiSelections"],
+      });
+      if (result.canceled || result.filePaths.length === 0) return null;
+      const id = crypto.randomUUID();
+      pickedUploads.set(id, result.filePaths);
+      return { id, names: result.filePaths.map((p) => path.basename(p)) };
     }
   );
 
   ipcMain.handle(
-    "sftp:upload",
-    async (evt, sessionId: string, remoteDir: string) => {
-      const result = await showOpenDialog(evt.sender, {
-        properties: ["openFile"],
-      });
-      if (result.canceled || result.filePaths.length === 0) return null;
-      const localPath = result.filePaths[0];
-      const fileName = localPath.split("/").pop();
-      const remotePath = `${remoteDir.replace(/\/$/, "")}/${fileName}`;
-      await ssh.uploadFile(sessionId, localPath, remotePath);
-      return remotePath;
+    "sftp:prepare-picked-upload",
+    (_evt, sessionId: string, pickId: string, remoteDir: string) => {
+      const localPaths = pickedUploads.get(pickId);
+      if (!localPaths) throw new Error("Unknown upload");
+      pickedUploads.delete(pickId);
+      return ssh.prepareUpload(sessionId, localPaths, remoteDir);
     }
   );
+
+  ipcMain.handle("sftp:start-upload", (evt, uploadId: string) => {
+    const sender = evt.sender;
+    return ssh.startUpload(uploadId, (progress) => {
+      if (!sender.isDestroyed()) sender.send(`sftp:upload-progress:${uploadId}`, progress);
+    });
+  });
+
+  ipcMain.handle("sftp:cancel-upload", (_evt, uploadId: string) => {
+    ssh.cancelUpload(uploadId);
+  });
 
   ipcMain.handle("sftp:stat", (_evt, sessionId: string, remotePath: string) => {
     return ssh.statPath(sessionId, remotePath);
