@@ -1,16 +1,16 @@
 {
-  "name": "macscp",
+  "name": "macflux",
   "version": "1.0.0",
   "description": "A WinSCP-style SSH terminal and SFTP file manager for macOS, unlocked with Touch ID.",
   "private": true,
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yusoffnike01/MacSCP.git"
+    "url": "git+https://github.com/yusoffnike01/macFlux.git"
   },
-  "homepage": "https://github.com/yusoffnike01/MacSCP#readme",
+  "homepage": "https://github.com/yusoffnike01/macFlux#readme",
   "bugs": {
-    "url": "https://github.com/yusoffnike01/MacSCP/issues"
+    "url": "https://github.com/yusoffnike01/macFlux/issues"
   },
   "engines": {
     "node": ">=20.19"
@@ -63,8 +63,8 @@
     "lzma-native": false
   },
   "build": {
-    "appId": "io.github.yusoffnike01.macscp",
-    "productName": "MacSCP",
+    "appId": "io.github.yusoffnike01.macflux",
+    "productName": "MacFlux",
     "directories": {
       "output": "release",
       "buildResources": "build"

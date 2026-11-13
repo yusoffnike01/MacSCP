@@ -21,7 +21,7 @@ async function confirmExit(action: "close" | "quit", win?: BrowserWindow) {
   try {
     const options: MessageBoxOptions = {
       type: "question",
-      message: `Are you sure you want to ${action} MacSCP?`,
+      message: `Are you sure you want to ${action} MacFlux?`,
       detail: "Any open server connection will be disconnected.",
       buttons: [action === "quit" ? "Quit" : "Close", "Cancel"],
       defaultId: 0,

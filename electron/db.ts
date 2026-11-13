@@ -60,7 +60,7 @@ if (!tableSql.includes("'password'")) {
   })();
 }
 
-// How MacSCP logs in to a server. 'agent' (ssh-agent) isn't supported yet.
+// How MacFlux logs in to a server. 'agent' (ssh-agent) isn't supported yet.
 export type AuthMethod = "key" | "password" | "agent";
 
 export interface ServerConnection {
