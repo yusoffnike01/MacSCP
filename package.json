@@ -1,6 +1,6 @@
 {
   "name": "macflux",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A WinSCP-style SSH terminal and SFTP file manager for macOS, unlocked with Touch ID.",
   "private": true,
   "main": "dist-electron/main.js",
