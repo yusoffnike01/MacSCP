@@ -22,6 +22,8 @@ interface Session {
   shellGeneration: number;
   // Shared SFTP channel, opened on first use (see getSftp()).
   sftp: Promise<SFTPWrapper> | null;
+  // Whether `find` can be run on the server, once checked (see search).
+  canFind: Promise<boolean> | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -131,6 +133,7 @@ export function connect(
           shellStream: null,
           shellGeneration: 0,
           sftp: null,
+          canFind: null,
         });
         resolve(sessionId);
       })
@@ -213,6 +216,9 @@ export function disconnect(sessionId: string): void {
   }
   for (const [id, download] of downloads) {
     if (download.sessionId === sessionId) cancelDownload(id);
+  }
+  for (const [id, search] of searches) {
+    if (search.sessionId === sessionId) cancelSearch(id);
   }
   for (const listener of disconnectListeners) listener(sessionId);
 }
@@ -1790,4 +1796,272 @@ function runCommand(session: Session, command: string): Promise<void> {
       });
     });
   });
+}
+
+// --- Searching for files and folders by name ---
+//
+// Everything under a folder whose name matches, found with `find` on the
+// server, which is fast. Where commands can't be run (an SFTP-only account),
+// folders are listed one after another over SFTP instead. Results are sent
+// in batches as they're found.
+
+// Never searched inside: huge, and rarely what anyone is looking for. Nor
+// the kernel's own file systems, when searching from "/".
+const SEARCH_SKIPPED_NAMES = ["node_modules", ".git", "vendor"];
+const SEARCH_SKIPPED_PATHS = ["/proc", "/sys", "/dev"];
+// Results stop here, so a search from "/" for "a" ends.
+const SEARCH_LIMIT = 500;
+
+export interface SearchHit {
+  path: string;
+  isDirectory: boolean;
+}
+
+export interface SearchResult {
+  found: number;
+  truncated: boolean; // stopped at SEARCH_LIMIT
+  stopped: boolean; // by the user
+}
+
+interface Search {
+  sessionId: string;
+  stopped: boolean;
+  stop: () => void; // ends whatever is running
+}
+
+const searches = new Map<string, Search>();
+
+interface NamePattern {
+  glob: string; // for find -iname
+  matches: (name: string) => boolean;
+}
+
+// "report" finds names containing it. With * or ?, like "*.php", the whole
+// name must match. Upper and lower case don't matter either way.
+function namePattern(query: unknown): NamePattern {
+  const text = typeof query === "string" ? query.trim() : "";
+  if (!text) throw new Error("Enter a name to search for");
+  if (text.includes("/") || text.includes("\0")) {
+    throw new Error("Search for a name, without “/”");
+  }
+  // [, ] and \ are wildcards to find too; here they're plain characters.
+  const forFind = text.replace(/[[\]\\]/g, "\\$&");
+  if (!/[*?]/.test(text)) {
+    const lower = text.toLowerCase();
+    return { glob: `*${forFind}*`, matches: (name) => name.toLowerCase().includes(lower) };
+  }
+  const source = Array.from(text, (c) =>
+    c === "*" ? ".*" : c === "?" ? "." : c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  ).join("");
+  const regex = new RegExp(`^${source}$`, "is");
+  return { glob: forFind, matches: (name) => regex.test(name) };
+}
+
+export async function search(
+  searchId: string,
+  sessionId: string,
+  rootPath: string,
+  query: string,
+  onHits: (hits: SearchHit[]) => void
+): Promise<SearchResult> {
+  if (typeof searchId !== "string" || !/^[\w-]{1,64}$/.test(searchId) || searches.has(searchId)) {
+    throw new Error("Invalid search");
+  }
+  const session = sessionOrThrow(sessionId);
+  checkPath(rootPath);
+  const pattern = namePattern(query);
+
+  const state: Search = { sessionId, stopped: false, stop: () => {} };
+  searches.set(searchId, state);
+  let found = 0;
+  let truncated = false;
+  let batch: SearchHit[] = [];
+  let lastSent = 0;
+  const flush = () => {
+    if (batch.length === 0) return;
+    onHits(batch);
+    batch = [];
+    lastSent = Date.now();
+  };
+  // Returns false once there are enough, or the search was stopped.
+  const add = (hit: SearchHit): boolean => {
+    if (state.stopped || truncated) return false;
+    batch.push(hit);
+    found++;
+    if (Date.now() - lastSent >= 100) flush(); // ~10 updates a second
+    if (found >= SEARCH_LIMIT) {
+      truncated = true;
+      state.stop();
+      return false;
+    }
+    return true;
+  };
+
+  try {
+    const ran = (await canRunFind(session)) && (await searchWithFind(session, rootPath, pattern, state, add));
+    if (!ran && !state.stopped && !truncated) {
+      await searchOverSftp(session, rootPath, pattern, state, add);
+    }
+    flush();
+    return { found, truncated, stopped: state.stopped };
+  } catch (err) {
+    flush();
+    if (state.stopped) return { found, truncated, stopped: true };
+    throw err;
+  } finally {
+    searches.delete(searchId);
+  }
+}
+
+export function cancelSearch(searchId: string): void {
+  const state = searches.get(searchId);
+  if (!state || state.stopped) return;
+  state.stopped = true;
+  state.stop();
+}
+
+// Runs `command` and resolves with its output and exit code. Its input is
+// closed at once, so nothing waits for it.
+function execOutput(
+  session: Session,
+  command: string,
+  onData?: (chunk: Buffer) => void,
+  setStop?: (stop: () => void) => void
+): Promise<{ output: Buffer; code: number | null }> {
+  return new Promise((resolve, reject) => {
+    session.client.exec(command, (err, stream) => {
+      if (err) return reject(err);
+      const chunks: Buffer[] = [];
+      let code: number | null = null;
+      setStop?.(() => stream.close());
+      stream.end();
+      stream.on("exit", (exitCode: number | null) => {
+        code = exitCode;
+      });
+      stream.on("data", (chunk: Buffer) => (onData ? onData(chunk) : chunks.push(chunk)));
+      stream.stderr.on("data", () => {});
+      stream.on("close", () => resolve({ output: Buffer.concat(chunks), code }));
+    });
+  });
+}
+
+// Whether commands, and find, can be run on this server. Checked once per
+// connection: an SFTP-only account may run every command as the SFTP server
+// itself, which answers nothing useful, so this looks for an exact answer.
+function canRunFind(session: Session): Promise<boolean> {
+  session.canFind ??= (async () => {
+    try {
+      const probe = execOutput(session, "command -v find >/dev/null && echo MACFLUX_FIND_OK");
+      const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+      const result = await Promise.race([probe, timeout]);
+      return result !== null && result.output.toString().trim() === "MACFLUX_FIND_OK";
+    } catch {
+      return false;
+    }
+  })();
+  return session.canFind;
+}
+
+// Resolves false if find couldn't be run after all.
+async function searchWithFind(
+  session: Session,
+  rootPath: string,
+  pattern: NamePattern,
+  state: Search,
+  add: (hit: SearchHit) => boolean
+): Promise<boolean> {
+  const skipped = [
+    ...SEARCH_SKIPPED_NAMES.map((name) => `-name ${shellQuote(name)}`),
+    ...SEARCH_SKIPPED_PATHS.map((p) => `-path ${shellQuote(p)}`),
+  ].join(" -o ");
+  // Each result ends in a NUL byte, the one character names can't contain.
+  // Folders start with "d" (every other path starts with "/"). -mindepth 1:
+  // the folder searched in is never skipped or listed itself.
+  const command =
+    `find ${shellQuote(rootPath)} -mindepth 1 '(' ${skipped} ')' -prune -o` +
+    ` -iname ${shellQuote(pattern.glob)}` +
+    ` '(' -type d -exec printf 'd%s\\0' '{}' + -o -print0 ')' 2>/dev/null`;
+  let rest = Buffer.alloc(0);
+  let any = false;
+  const { code } = await execOutput(
+    session,
+    command,
+    (chunk) => {
+      let data = Buffer.concat([rest, chunk]);
+      for (let end = data.indexOf(0); end !== -1; end = data.indexOf(0)) {
+        const record = data.subarray(0, end).toString("utf8");
+        data = data.subarray(end + 1);
+        any = true;
+        const isDirectory = record.startsWith("d");
+        const hitPath = isDirectory ? record.slice(1) : record;
+        if (!hitPath.startsWith(rootPath === "/" ? "/" : `${rootPath}/`)) continue;
+        if (!add({ path: hitPath, isDirectory })) break;
+      }
+      rest = data;
+    },
+    (stop) => {
+      state.stop = stop;
+    }
+  );
+  // 127: find wasn't there after all. Other codes just mean some folders
+  // couldn't be read, which a search goes past.
+  return !(code === 127 && !any);
+}
+
+async function searchOverSftp(
+  session: Session,
+  rootPath: string,
+  pattern: NamePattern,
+  state: Search,
+  add: (hit: SearchHit) => boolean
+): Promise<void> {
+  const sftp = await getSftp(session);
+  let done = false;
+  state.stop = () => {
+    done = true;
+  };
+  const pending = [rootPath];
+  let running = 0;
+  let failure: unknown = null;
+  await new Promise<void>((resolve) => {
+    const pump = () => {
+      while (!done && !failure && pending.length > 0 && running < SCAN_CONCURRENCY) {
+        const folder = pending.shift()!;
+        running++;
+        readFolder(sftp, folder)
+          .then(
+            (entries) => {
+              for (const { filename: name, attrs } of entries) {
+                if (done || !isPlainName(name)) continue;
+                const childPath = path.posix.join(folder, name);
+                const isDirectory = fileType(attrs.mode) === "directory";
+                if (pattern.matches(name) && !add({ path: childPath, isDirectory })) {
+                  done = true;
+                  break;
+                }
+                if (
+                  isDirectory &&
+                  !SEARCH_SKIPPED_NAMES.includes(name) &&
+                  !SEARCH_SKIPPED_PATHS.includes(childPath)
+                ) {
+                  pending.push(childPath);
+                }
+              }
+            },
+            (err) => {
+              // A folder this login can't read is passed over.
+              if (closedChannels.has(sftp)) failure ??= new Error(CONNECTION_LOST);
+              else if (folder === rootPath) failure ??= err;
+            }
+          )
+          .finally(() => {
+            running--;
+            pump();
+          });
+      }
+      if (running === 0) resolve();
+    };
+    pump();
+  });
+  if (failure) throw failure;
 }

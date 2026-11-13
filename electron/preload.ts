@@ -112,6 +112,13 @@ contextBridge.exposeInMainWorld("api", {
       options: unknown
     ) =>
       ipcRenderer.invoke("sftp:write-text", sessionId, remotePath, content, options),
+    // Search by name under a folder. Results arrive with onSearchHits() as
+    // they're found; it resolves when the search ends.
+    search: (searchId: string, sessionId: string, rootPath: string, query: string) =>
+      ipcRenderer.invoke("sftp:search", searchId, sessionId, rootPath, query),
+    onSearchHits: (searchId: string, cb: (hits: unknown) => void) =>
+      listen(`sftp:search-hits:${searchId}`, cb),
+    cancelSearch: (searchId: string) => ipcRenderer.invoke("sftp:cancel-search", searchId),
     // Open with Cursor / VS Code: a copy, sent back to the server on each
     // save there. Each save is reported with onExternalSave().
     openExternal: (sessionId: string, remotePath: string, editorId: string) =>
