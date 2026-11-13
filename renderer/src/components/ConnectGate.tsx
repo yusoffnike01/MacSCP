@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ServerConnection } from "../types";
 import { errorMessage } from "../format";
+import { FingerprintIcon, LockIcon } from "./Icons";
 
 // `typed`: the password was typed in just now, rather than the saved one.
 function connectError(err: unknown, connection: ServerConnection, typed: boolean): string {
@@ -71,8 +72,8 @@ export function ConnectGate({
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-5">
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-surface-2 text-3xl">
-        🔒
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-border-subtle bg-surface-2 text-text-secondary">
+        <LockIcon size={28} />
       </div>
       <div className="text-center">
         <h2 className="text-base font-semibold text-text-primary">
@@ -110,7 +111,7 @@ export function ConnectGate({
           disabled={status === "connecting"}
           className="flex items-center gap-2 rounded-xl bg-accent px-6 py-3 text-sm font-medium text-surface-0 transition-opacity hover:opacity-90 disabled:opacity-60"
         >
-          <span className="text-lg">👆</span>
+          <FingerprintIcon size={18} />
           {status === "connecting" ? "Verifying..." : "Verify with Touch ID"}
         </button>
       )}
