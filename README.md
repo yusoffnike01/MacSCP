@@ -1,20 +1,20 @@
 <p align="center">
-  <img src="build/icon.png" width="128" alt="MacSCP icon">
+  <img src="build/icon.png" width="128" alt="MacFlux icon">
 </p>
 
-<h1 align="center">MacSCP</h1>
+<h1 align="center">MacFlux</h1>
 
 <p align="center">
   A WinSCP-style SSH terminal and SFTP file manager for macOS, unlocked with Touch ID.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/3-files.png" alt="MacSCP showing the files on a server" width="860">
+  <img src="docs/screenshots/3-files.png" alt="MacFlux showing the files on a server" width="860">
 </p>
 
-## Why MacSCP?
+## Why MacFlux?
 
-On Windows, WinSCP is the go-to tool for looking after servers: browse files, upload and download, edit config files, fix permissions, and open a terminal when you need one. MacSCP brings that same workflow to the Mac.
+On Windows, WinSCP is the go-to tool for looking after servers: browse files, upload and download, edit config files, fix permissions, and open a terminal when you need one. MacFlux brings that same workflow to the Mac.
 
 - **Terminal and files in one window.** Each server gets an SSH terminal tab and an SFTP file browser tab.
 - **Touch ID before every connection.** Nobody can open your servers from your Mac without your fingerprint.
@@ -24,7 +24,7 @@ On Windows, WinSCP is the go-to tool for looking after servers: browse files, up
 - **Right-click menus like WinSCP.** Edit, Download, Rename, Delete, Copy Path and Properties.
 - **Properties like WinSCP.** Change permissions (checkboxes or octal), owner and group, for one item or everything inside a folder.
 - **Built-in editor.** Edit files on the server and save with ⌘S. Line endings and file permissions are kept, and you're warned if someone else changed the file in the meantime.
-- **Host key checking.** You confirm each server's fingerprint once; MacSCP warns you if it ever changes.
+- **Host key checking.** You confirm each server's fingerprint once; MacFlux warns you if it ever changes.
 
 ## Requirements
 
@@ -34,22 +34,24 @@ On Windows, WinSCP is the go-to tool for looking after servers: browse files, up
 
 ## Install
 
-MacSCP isn't on the App Store, so you build it once on your own Mac:
+MacFlux isn't on the App Store, so you build it once on your own Mac:
 
 ```bash
-git clone https://github.com/yusoffnike01/MacSCP.git
-cd MacSCP
+git clone https://github.com/yusoffnike01/macFlux.git
+cd macFlux
 npm install
 npm run install:app
 ```
 
-This builds **MacSCP.app** and puts it in your **Applications** folder. Open it from Launchpad or Spotlight (⌘ Space, type "MacSCP").
+This builds **MacFlux.app** and puts it in your **Applications** folder. Open it from Launchpad or Spotlight (⌘ Space, type "MacFlux").
 
-To update later, quit MacSCP (⌘Q) and run:
+To update later, quit MacFlux (⌘Q) and run:
 
 ```bash
 git pull && npm install && npm run install:app
 ```
+
+MacFlux used to be called **MacSCP**. Updating from MacSCP replaces its copy in Applications, and keeps your saved servers, passwords and trusted fingerprints.
 
 ### If the build fails
 
@@ -75,7 +77,7 @@ Click **+ Add server** at the bottom of the sidebar and fill in the server's add
 - **SSH key**: choose your private key file (for example `~/.ssh/id_ed25519`). If your key has a passphrase, enter it once.
 - **Password**: enter the server password once.
 
-MacSCP keeps the password or passphrase in the macOS Keychain.
+MacFlux keeps the password or passphrase in the macOS Keychain.
 
 <img src="docs/screenshots/6-add-server.png" alt="Add server form" width="760">
 
@@ -83,7 +85,7 @@ MacSCP keeps the password or passphrase in the macOS Keychain.
 
 Click the server in the sidebar, then **Verify with Touch ID**. Once connected, a pulsing green dot appears next to the server's name; it goes away if the connection drops.
 
-The first time you connect to a server, MacSCP shows its **fingerprint** (for example `SHA256:aIUAFOAY…`) and asks if you trust it. To be sure it's the right server, compare it with the output of `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. After that, MacSCP connects straight away, and warns you if the fingerprint ever changes.
+The first time you connect to a server, MacFlux shows its **fingerprint** (for example `SHA256:aIUAFOAY…`) and asks if you trust it. To be sure it's the right server, compare it with the output of `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. After that, MacFlux connects straight away, and warns you if the fingerprint ever changes.
 
 <img src="docs/screenshots/1-connect.png" alt="Connect with Touch ID" width="760">
 
@@ -106,9 +108,9 @@ The **Files** tab shows the files on the server.
 - **Stop** ends a download at once: files already saved are kept, and any file only partly saved is deleted. An upload stops once the files being sent at that moment are finished, so none is left half-written on the server.
 - Double-click a file to edit it.
 
-If something you upload is already on the server, MacSCP asks before replacing it. A folder is merged: files with the same names are replaced, and any other files already in it are kept. Finder's `.DS_Store` files and symbolic links inside uploaded folders aren't uploaded.
+If something you upload is already on the server, MacFlux asks before replacing it. A folder is merged: files with the same names are replaced, and any other files already in it are kept. Finder's `.DS_Store` files and symbolic links inside uploaded folders aren't uploaded.
 
-Downloading a folder works the same way: if your Mac already has a folder with that name there, MacSCP asks before adding to it. Some things inside a downloaded folder are left out, and listed when the download is done:
+Downloading a folder works the same way: if your Mac already has a folder with that name there, MacFlux asks before adding to it. Some things inside a downloaded folder are left out, and listed when the download is done:
 
 - symbolic links and special files (sockets, pipes, devices)
 - files and folders your login isn't allowed to read, or that were deleted or changed on the server while downloading
@@ -135,13 +137,13 @@ For folders, **Apply to everything inside** changes all the files and subfolders
 
 ### 6. Edit files on the server
 
-Double-click a text file (or right-click → **Edit**). Save with **⌘S**, close with **Esc**. If the file changed on the server since you opened it, MacSCP asks before overwriting it.
+Double-click a text file (or right-click → **Edit**). Save with **⌘S**, close with **Esc**. If the file changed on the server since you opened it, MacFlux asks before overwriting it.
 
 <img src="docs/screenshots/5-editor.png" alt="Built-in editor" width="760">
 
 ## Coming from WinSCP?
 
-| In WinSCP                          | In MacSCP                                        |
+| In WinSCP                          | In MacFlux                                       |
 | ---------------------------------- | ------------------------------------------------ |
 | Login dialog / saved sites         | Sidebar, **+ Add server**                        |
 | Open in PuTTY                      | **Terminal** tab                                 |
@@ -153,13 +155,13 @@ Double-click a text file (or right-click → **Edit**). Save with **⌘S**, clos
 
 ## Security and privacy
 
-- MacSCP asks for **Touch ID every time you connect**.
-- Your server list (name, address, username, key file location and trusted fingerprint) is stored only on your Mac, in `~/Library/Application Support/MacSCP`. No passwords are stored there.
+- MacFlux asks for **Touch ID every time you connect**.
+- Your server list (name, address, username, key file location and trusted fingerprint) is stored only on your Mac, in `~/Library/Application Support/MacFlux`. No passwords are stored there.
 - Passwords and key passphrases are stored in the **macOS Keychain** and only read after Touch ID.
-- Your private key stays where it is (for example in `~/.ssh`). MacSCP only reads it when connecting.
-- MacSCP talks only to your servers. There is no tracking or analytics.
+- Your private key stays where it is (for example in `~/.ssh`). MacFlux only reads it when connecting.
+- MacFlux talks only to your servers. There is no tracking or analytics.
 
-Touch ID protects access *through MacSCP*; it doesn't lock the key file itself. For full protection, give your SSH key a passphrase: `ssh-keygen -p -f ~/.ssh/your_key`.
+Touch ID protects access *through MacFlux*; it doesn't lock the key file itself. For full protection, give your SSH key a passphrase: `ssh-keygen -p -f ~/.ssh/your_key`.
 
 ## Limitations
 

@@ -58,7 +58,7 @@ export function Sidebar({
         style={{ paddingTop: "34px" }}
       >
         <span className="text-sm font-semibold tracking-wide text-text-primary">
-          MacSCP
+          MacFlux
         </span>
       </div>
 

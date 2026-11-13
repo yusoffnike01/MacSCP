@@ -7,6 +7,8 @@
 import keytar from "keytar";
 
 // A Keychain service per kind of secret, so each item says what it holds.
+// Still named after MacSCP, the app's old name: renaming them would lose
+// every saved password and passphrase.
 const SERVICES = {
   passphrase: "MacSCP:ssh-key-passphrase",
   password: "MacSCP:ssh-password",
