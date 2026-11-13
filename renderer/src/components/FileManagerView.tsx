@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type DragEvent, type MouseEvent } from "react";
-import type { ContextMenuItem, RemoteEntry } from "../types";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
+import type { ContextMenuItem, ExternalEditor, RemoteEntry } from "../types";
 import { formatSize } from "../format";
 import { PropertiesDialog } from "./PropertiesDialog";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
@@ -7,6 +7,16 @@ import { FileEditor } from "./FileEditor";
 import { UploadDialog, type UploadSource } from "./UploadDialog";
 import { DownloadDialog } from "./DownloadDialog";
 import { ArrowUpIcon, FileIcon, FolderIcon } from "./Icons";
+
+type Notice = { kind: "info" | "error"; text: string };
+
+function baseName(remotePath: string): string {
+  return remotePath.slice(remotePath.lastIndexOf("/") + 1);
+}
+
+function parentPath(remotePath: string): string {
+  return remotePath.slice(0, remotePath.lastIndexOf("/")) || "/";
+}
 
 function joinPath(dir: string, name: string): string {
   return `${dir.replace(/\/+$/, "")}/${name}`;
@@ -75,6 +85,61 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
   const sortedEntries = useMemo(() => sortEntries(entries, sort), [entries, sort]);
   // Files are being dragged over the panel from Finder.
   const [dropActive, setDropActive] = useState(false);
+  // Editors installed on this Mac, for Open with Cursor / VS Code.
+  const [editors, setEditors] = useState<ExternalEditor[]>([]);
+  // A short message at the bottom, e.g. after a save in one of them.
+  const [notice, setNotice] = useState<Notice | null>(null);
+  // For the save listener below, which outlives a render.
+  const currentPathRef = useRef(currentPath);
+  currentPathRef.current = currentPath;
+
+  useEffect(() => {
+    window.api.ui.externalEditors().then(setEditors, () => setEditors([]));
+  }, []);
+
+  // A file opened in Cursor / VS Code was saved there: say whether it reached
+  // the server, and show its new size and date if it's in this folder.
+  useEffect(
+    () =>
+      window.api.sftp.onExternalSave((update) => {
+        if (update.sessionId !== sessionId) return;
+        const name = baseName(update.remotePath);
+        if (update.status === "saved") {
+          setNotice({ kind: "info", text: `Saved “${name}” to the server.` });
+          if (parentPath(update.remotePath) === currentPathRef.current) {
+            window.api.sftp.list(sessionId, currentPathRef.current).then(setEntries, () => {});
+          }
+        } else if (update.status === "skipped") {
+          setNotice({ kind: "info", text: `“${name}” wasn't saved to the server.` });
+        } else {
+          setNotice({
+            kind: "error",
+            text: `Couldn't save “${name}” to the server: ${update.message ?? "unknown error"}`,
+          });
+        }
+      }),
+    [sessionId]
+  );
+
+  // Messages go away by themselves; errors stay until closed.
+  useEffect(() => {
+    if (notice?.kind !== "info") return;
+    const timer = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  async function openExternal(fullPath: string, editor: ExternalEditor) {
+    setNotice({ kind: "info", text: `Opening “${baseName(fullPath)}” in ${editor.name}…` });
+    try {
+      await window.api.sftp.openExternal(sessionId, fullPath, editor.id);
+      setNotice({
+        kind: "info",
+        text: `Opened in ${editor.name}. Each time you save it there, it's saved to the server.`,
+      });
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   useEffect(() => {
     try {
@@ -186,6 +251,9 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
     const fullPath = joinPath(currentPath, entry.name);
     const items: ContextMenuItem[] = [
       entry.isDirectory ? { id: "open", label: "Open" } : { id: "edit", label: "Edit" },
+      ...(entry.isDirectory
+        ? []
+        : editors.map((editor) => ({ id: `open-with:${editor.id}`, label: `Open with ${editor.name}` }))),
       { id: "download", label: "Download…" },
       { type: "separator" },
       { id: "rename", label: "Rename…" },
@@ -195,7 +263,13 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
       { type: "separator" },
       { id: "properties", label: "Properties…" },
     ];
-    switch (await window.api.ui.showContextMenu(items)) {
+    const choice = await window.api.ui.showContextMenu(items);
+    const editor = editors.find((e) => choice === `open-with:${e.id}`);
+    if (editor) {
+      void openExternal(fullPath, editor);
+      return;
+    }
+    switch (choice) {
       case "open":
         load(fullPath);
         break;
@@ -398,6 +472,27 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
             load(dialog.remoteDir, select);
           }}
         />
+      )}
+
+      {notice && (
+        <div
+          role={notice.kind === "error" ? "alert" : "status"}
+          className={`absolute bottom-4 left-1/2 z-10 flex max-w-[80%] -translate-x-1/2 items-start gap-3 rounded-lg border px-4 py-2.5 text-sm shadow-xl ${
+            notice.kind === "error"
+              ? "border-danger/40 bg-surface-2 text-danger"
+              : "border-border-subtle bg-surface-2 text-text-secondary"
+          }`}
+        >
+          <span className="min-w-0 break-words">{notice.text}</span>
+          {notice.kind === "error" && (
+            <button
+              onClick={() => setNotice(null)}
+              className="shrink-0 text-text-muted hover:text-text-primary"
+            >
+              Close
+            </button>
+          )}
+        </div>
       )}
 
       {dialog?.kind === "download" && (

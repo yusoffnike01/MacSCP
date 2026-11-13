@@ -112,10 +112,17 @@ contextBridge.exposeInMainWorld("api", {
       options: unknown
     ) =>
       ipcRenderer.invoke("sftp:write-text", sessionId, remotePath, content, options),
+    // Open with Cursor / VS Code: a copy, sent back to the server on each
+    // save there. Each save is reported with onExternalSave().
+    openExternal: (sessionId: string, remotePath: string, editorId: string) =>
+      ipcRenderer.invoke("sftp:open-external", sessionId, remotePath, editorId),
+    onExternalSave: (cb: (update: unknown) => void) => listen("sftp:external-save", cb),
   },
   ui: {
     showContextMenu: (items: unknown) =>
       ipcRenderer.invoke("ui:context-menu", items),
     copyText: (text: string) => ipcRenderer.invoke("ui:copy-text", text),
+    // The editors installed on this Mac that files can be opened with.
+    externalEditors: () => ipcRenderer.invoke("ui:external-editors"),
   },
 });
