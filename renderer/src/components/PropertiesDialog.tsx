@@ -7,6 +7,7 @@ import type {
   RemoteStat,
 } from "../types";
 import { errorMessage, formatSize } from "../format";
+import { FileIcon, FolderIcon, LinkIcon, SpecialFileIcon } from "./Icons";
 
 const CLASSES = [
   { label: "Owner", shift: 6 },
@@ -33,11 +34,11 @@ const TYPE_LABELS: Record<RemoteFileType, string> = {
   other: "Special file",
 };
 
-const TYPE_ICONS: Record<RemoteFileType, string> = {
-  file: "📄",
-  directory: "📁",
-  symlink: "🔗",
-  other: "⚙️",
+const TYPE_ICONS: Record<RemoteFileType, typeof FileIcon> = {
+  file: FileIcon,
+  directory: FolderIcon,
+  symlink: LinkIcon,
+  other: SpecialFileIcon,
 };
 
 const fieldClass =
@@ -78,6 +79,7 @@ export function PropertiesDialog({
   onClose: () => void;
 }) {
   const [info, setInfo] = useState<RemoteStat | null>(null);
+  const TypeIcon = info ? TYPE_ICONS[info.type] : FileIcon;
   const [principals, setPrincipals] = useState<Principals>({
     users: [],
     groups: [],
@@ -186,7 +188,7 @@ export function PropertiesDialog({
         className="flex max-h-[90vh] w-[460px] flex-col rounded-2xl border border-border-subtle bg-surface-1 shadow-2xl"
       >
         <div className="flex items-center gap-3 border-b border-border-subtle px-6 py-4">
-          <span className="text-2xl">{info ? TYPE_ICONS[info.type] : "📄"}</span>
+          <TypeIcon size={24} className="shrink-0 text-text-secondary" />
           <div className="min-w-0">
             <h2
               id="properties-title"

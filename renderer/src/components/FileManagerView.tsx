@@ -6,6 +6,7 @@ import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { FileEditor } from "./FileEditor";
 import { UploadDialog, type UploadSource } from "./UploadDialog";
 import { DownloadDialog } from "./DownloadDialog";
+import { ArrowUpIcon, FileIcon, FolderIcon } from "./Icons";
 
 function joinPath(dir: string, name: string): string {
   return `${dir.replace(/\/+$/, "")}/${name}`;
@@ -266,9 +267,10 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
         <button
           onClick={navigateUp}
           disabled={currentPath === "/"}
-          className="rounded-md px-2 py-1 text-sm text-text-secondary hover:bg-surface-2 disabled:opacity-40"
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-sm text-text-secondary hover:bg-surface-2 disabled:opacity-40"
         >
-          ↑ Up
+          <ArrowUpIcon size={14} />
+          Up
         </button>
         <span className="flex-1 truncate font-mono text-xs text-text-muted">
           {currentPath}
@@ -336,8 +338,14 @@ export function FileManagerView({ sessionId }: { sessionId: string }) {
                       entry.isDirectory && load(joinPath(currentPath, entry.name))
                     }
                   >
-                    <span className="mr-2">{entry.isDirectory ? "📁" : "📄"}</span>
-                    {entry.name}
+                    <span className="flex items-center gap-2">
+                      {entry.isDirectory ? (
+                        <FolderIcon className="shrink-0 text-accent" />
+                      ) : (
+                        <FileIcon className="shrink-0 text-text-muted" />
+                      )}
+                      {entry.name}
+                    </span>
                   </td>
                   <td className="px-4 py-2 text-text-muted">
                     {entry.isDirectory ? "—" : formatSize(entry.size)}
