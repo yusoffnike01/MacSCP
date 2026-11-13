@@ -51,6 +51,21 @@ To update later, quit MacSCP (⌘Q) and run:
 git pull && npm install && npm run install:app
 ```
 
+### If the build fails
+
+**`The specified electronDist does not exist: …/node_modules/electron/dist`**
+
+`npm install` normally downloads Electron itself (about 100 MB) right after installing the packages. If that download was skipped or interrupted, the build can't find it. Download it, then build again:
+
+```bash
+node node_modules/electron/install.js
+npm run install:app
+```
+
+To check it's there, `ls node_modules/electron/dist` should list `Electron.app`.
+
+This can happen again after any `npm install`, so run the same two commands if you see the error again.
+
 ## How to use
 
 ### 1. Add a server
