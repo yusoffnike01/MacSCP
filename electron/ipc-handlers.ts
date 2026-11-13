@@ -33,6 +33,7 @@ import path from "node:path";
 import { requestTouchId } from "./touchid";
 import { getSecret, setSecret, deleteSecret, type SecretKind } from "./keychain";
 import * as ssh from "./ssh";
+import { installedEditors, openInEditor } from "./external-edit";
 
 // The Keychain secret a server logs in with.
 function secretKind(conn: ServerConnection): SecretKind {
@@ -421,7 +422,17 @@ export function registerIpcHandlers() {
     }
   );
 
+  // Open with Cursor / VS Code (see external-edit.ts).
+  ipcMain.handle(
+    "sftp:open-external",
+    (evt, sessionId: string, remotePath: string, editorId: string) => {
+      return openInEditor(evt.sender, sessionId, remotePath, editorId);
+    }
+  );
+
   // --- Small UI helpers the sandboxed renderer can't do itself ---
+
+  ipcMain.handle("ui:external-editors", () => installedEditors());
 
   ipcMain.handle("ui:context-menu", (evt, items: ContextMenuItem[]) => {
     return popupContextMenu(evt.sender, items);

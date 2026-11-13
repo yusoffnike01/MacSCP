@@ -214,6 +214,14 @@ export function disconnect(sessionId: string): void {
   for (const [id, download] of downloads) {
     if (download.sessionId === sessionId) cancelDownload(id);
   }
+  for (const listener of disconnectListeners) listener(sessionId);
+}
+
+// Called with the session's id whenever disconnect() ends one.
+const disconnectListeners = new Set<(sessionId: string) => void>();
+
+export function onDisconnect(listener: (sessionId: string) => void): void {
+  disconnectListeners.add(listener);
 }
 
 export function disconnectAll(): void {
@@ -1677,6 +1685,61 @@ export async function writeTextFile(
   );
   const saved = await call<Stats>((done) => sftp.stat(remotePath, done));
   return { modifiedAt: saved.mtime * 1000, size: saved.size };
+}
+
+// --- Opening a file in another app (see external-edit.ts) ---
+
+// Which version of a file is on the server, to notice someone else changing
+// it. mtime is in seconds.
+export interface RemoteVersion {
+  mtime: number;
+  size: number;
+}
+
+// Copies a remote file to a local one. stat, not lstat: a symbolic link
+// opens the file it points to.
+export async function fetchToLocal(
+  sessionId: string,
+  remotePath: string,
+  localPath: string
+): Promise<RemoteVersion> {
+  const session = sessionOrThrow(sessionId);
+  checkPath(remotePath);
+  const sftp = await getSftp(session);
+  const attrs = await sftpCall<Stats>(sftp, (done) => sftp.stat(remotePath, done));
+  if (fileType(attrs.mode) !== "file") throw new Error("Only files can be opened in another app");
+  await sftpCall<void>(sftp, (done) => sftp.fastGet(remotePath, localPath, done));
+  return { mtime: attrs.mtime, size: attrs.size };
+}
+
+// The file's version on the server now, or null if it's gone.
+export async function remoteVersion(
+  sessionId: string,
+  remotePath: string
+): Promise<RemoteVersion | null> {
+  const sftp = await getSftp(sessionOrThrow(sessionId));
+  try {
+    const attrs = await sftpCall<Stats>(sftp, (done) => sftp.stat(remotePath, done));
+    return { mtime: attrs.mtime, size: attrs.size };
+  } catch (err) {
+    if ((err as { code?: unknown }).code === SFTP_NO_SUCH_FILE) return null;
+    throw err;
+  }
+}
+
+// Sends a local file over a remote one. Written in place, like the built-in
+// editor's save, which keeps the file's permissions and owner.
+export async function sendLocalFile(
+  sessionId: string,
+  localPath: string,
+  remotePath: string
+): Promise<RemoteVersion> {
+  const session = sessionOrThrow(sessionId);
+  checkPath(remotePath);
+  const sftp = await getSftp(session);
+  await sftpCall<void>(sftp, (done) => sftp.fastPut(localPath, remotePath, done));
+  const attrs = await sftpCall<Stats>(sftp, (done) => sftp.stat(remotePath, done));
+  return { mtime: attrs.mtime, size: attrs.size };
 }
 
 function isIntInRange(value: unknown, min: number, max: number): value is number {

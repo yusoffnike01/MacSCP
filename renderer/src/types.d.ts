@@ -23,6 +23,22 @@ export interface RemoteEntry {
 
 export type RemoteFileType = "file" | "directory" | "symlink" | "other";
 
+// An editor on this Mac that files can be opened with (Open with Cursor…).
+export interface ExternalEditor {
+  id: string;
+  name: string;
+}
+
+// A save in that editor, sent to the server (or not).
+export interface ExternalSave {
+  sessionId: string;
+  remotePath: string;
+  // "skipped": it was changed on the server too, and the user chose not to
+  // replace it.
+  status: "saved" | "skipped" | "error";
+  message?: string;
+}
+
 export interface RemoteStat {
   path: string;
   type: RemoteFileType;
@@ -245,11 +261,17 @@ export interface WindowApi {
       content: string,
       options: SaveTextOptions
     ) => Promise<{ modifiedAt: number; size: number }>;
+    // Open with Cursor / VS Code: copies the file to this Mac, opens it in
+    // the editor, and sends it back to the server each time it's saved there.
+    openExternal: (sessionId: string, remotePath: string, editorId: string) => Promise<void>;
+    // After each of those saves (any session).
+    onExternalSave: (cb: (update: ExternalSave) => void) => () => void;
   };
   ui: {
     // Native context menu; resolves with the chosen item's id, or null.
     showContextMenu: (items: ContextMenuItem[]) => Promise<string | null>;
     copyText: (text: string) => Promise<void>;
+    externalEditors: () => Promise<ExternalEditor[]>;
   };
 }
 
