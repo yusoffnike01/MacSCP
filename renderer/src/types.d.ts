@@ -23,6 +23,17 @@ export interface RemoteEntry {
 
 export type RemoteFileType = "file" | "directory" | "symlink" | "other";
 
+export interface SearchHit {
+  path: string;
+  isDirectory: boolean;
+}
+
+export interface SearchResult {
+  found: number;
+  truncated: boolean; // stopped at the limit (500)
+  stopped: boolean; // by the user
+}
+
 // An editor on this Mac that files can be opened with (Open with Cursor…).
 export interface ExternalEditor {
   id: string;
@@ -261,6 +272,16 @@ export interface WindowApi {
       content: string,
       options: SaveTextOptions
     ) => Promise<{ modifiedAt: number; size: number }>;
+    // Search by name under `rootPath`: "report" finds names containing it,
+    // "*.php" whole names. Skips node_modules, .git and vendor; stops at 500.
+    search: (
+      searchId: string,
+      sessionId: string,
+      rootPath: string,
+      query: string
+    ) => Promise<SearchResult>;
+    onSearchHits: (searchId: string, cb: (hits: SearchHit[]) => void) => () => void;
+    cancelSearch: (searchId: string) => Promise<void>;
     // Open with Cursor / VS Code: copies the file to this Mac, opens it in
     // the editor, and sends it back to the server each time it's saved there.
     openExternal: (sessionId: string, remotePath: string, editorId: string) => Promise<void>;

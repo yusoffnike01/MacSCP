@@ -21,7 +21,9 @@ On Windows, WinSCP is the go-to tool for looking after servers: browse files, up
 - **Upload files and whole folders.** Use **Upload file** or **Upload folder**, or drag them from Finder onto the Files tab.
 - **Download files and whole folders.** Right-click → **Download…**, and a folder comes down with everything inside it, keeping the dates it has on the server.
 - **Transfer progress like WinSCP.** Percentage, time elapsed, time left and speed for uploads and downloads, and a clear "complete" when they finish.
-- **Right-click menus like WinSCP.** Edit, Download, Rename, Delete, Copy Path and Properties.
+- **Find files fast.** Type in the search box (⌘F) to filter the folder, or tick **Subfolders** to search everything inside it.
+- **Open in Cursor or VS Code.** Right-click a file → **Open with Cursor**; each time you save it there, it's saved to the server.
+- **Right-click menus like WinSCP.** Edit, Open with, Download, Rename, Delete, Copy Path and Properties.
 - **Properties like WinSCP.** Change permissions (checkboxes or octal), owner and group, for one item or everything inside a folder.
 - **Built-in editor.** Edit files on the server and save with ⌘S. Line endings and file permissions are kept, and you're warned if someone else changed the file in the meantime.
 - **Host key checking.** You confirm each server's fingerprint once; MacFlux warns you if it ever changes.
@@ -106,7 +108,7 @@ The **Files** tab shows the files on the server.
 - To download, right-click a file or folder and choose **Download…** (or click **Download** at the end of its row). A file asks where to save it; a folder asks which folder on your Mac to save it in, and comes down with everything inside it. Downloaded files and folders keep the modified dates they have on the server.
 - Uploads and downloads show a progress window: the percentage done, time elapsed, time left and speed. When the transfer is finished it turns green and says **Upload complete** or **Download complete** (with **Show in Finder** for downloads), and stays until you click OK.
 - **Stop** ends a download at once: files already saved are kept, and any file only partly saved is deleted. An upload stops once the files being sent at that moment are finished, so none is left half-written on the server.
-- Double-click a file to edit it.
+- Double-click a file to edit it, or right-click → **Open with Cursor** (or **VS Code**) to edit it there (see [Edit files on the server](#7-edit-files-on-the-server)).
 
 If something you upload is already on the server, MacFlux asks before replacing it. A folder is merged: files with the same names are replaced, and any other files already in it are kept. Finder's `.DS_Store` files and symbolic links inside uploaded folders aren't uploaded.
 
@@ -120,14 +122,27 @@ Right-click for more:
 
 | Right-click on   | You get                                                                  |
 | ---------------- | ------------------------------------------------------------------------ |
-| A file           | Edit · Download… · Rename… · Delete… · Copy Path · Properties…           |
+| A file           | Edit · Open with Cursor / VS Code · Download… · Rename… · Delete… · Copy Path · Properties… |
 | A folder         | Open · Download… · Rename… · Delete… · Copy Path · Properties…           |
 | Empty space      | New Folder… · Upload File… · Upload Folder… · Refresh · Copy Path · Properties… |
 | A server (sidebar) | Edit… · Rename… · Delete…                                              |
 
 Deleting always asks first. Deleting a folder removes everything inside it.
 
-### 5. Change permissions and owner
+### 5. Search for files
+
+Type part of a name in the **Search** box above the list (or press **⌘F**). The folder you're in is filtered as you type, and the matching part of each name is highlighted. **Esc** clears it.
+
+To look inside every folder below this one too, tick **Subfolders**. Results show up as they're found, with where each one is. Double-click a result to edit it (or open a folder), or right-click it for **Show in Folder**, **Open with Cursor**, **Download…** and more. **Stop** ends a search early and keeps what it found.
+
+- `report` finds every name that contains "report". Upper and lower case don't matter.
+- Use `*` and `?` to match a whole name: `*.php` finds every PHP file, `report_?.php` finds `report_1.php` but not `report_10.php`.
+- `node_modules`, `.git` and `vendor` folders are skipped, as they're huge and rarely what you're looking for. To search inside one, open it first.
+- A search shows at most 500 results. If it stops there, type more of the name.
+
+<img src="docs/screenshots/7-search.png" alt="Searching subfolders" width="760">
+
+### 6. Change permissions and owner
 
 Right-click a file or folder and choose **Properties…**. Tick the Read / Write / Execute boxes or type an octal value like `755`, and pick the owner and group.
 
@@ -135,11 +150,17 @@ For folders, **Apply to everything inside** changes all the files and subfolders
 
 <img src="docs/screenshots/4-properties.png" alt="Properties dialog" width="760">
 
-### 6. Edit files on the server
+### 7. Edit files on the server
 
 Double-click a text file (or right-click → **Edit**). Save with **⌘S**, close with **Esc**. If the file changed on the server since you opened it, MacFlux asks before overwriting it.
 
 <img src="docs/screenshots/5-editor.png" alt="Built-in editor" width="760">
+
+#### In Cursor or VS Code
+
+Right-click a file → **Open with Cursor** (or **Open with VS Code**). These show up for the editors installed in your Applications folder.
+
+MacFlux copies the file to a private folder on your Mac and opens it there. Each time you save it in the editor, MacFlux sends it back to the server and says so at the bottom of the Files tab. If someone changed the file on the server in the meantime, it asks before replacing it. The copy is removed when you disconnect, unless a save didn't reach the server, so nothing you saved is lost.
 
 ## Coming from WinSCP?
 
@@ -148,6 +169,8 @@ Double-click a text file (or right-click → **Edit**). Save with **⌘S**, clos
 | Login dialog / saved sites         | Sidebar, **+ Add server**                        |
 | Open in PuTTY                      | **Terminal** tab                                 |
 | Edit                               | Double-click a file, or right-click → Edit       |
+| Edit with an external editor       | Right-click → Open with Cursor / VS Code         |
+| Find files                         | **Search** box (⌘F), with **Subfolders** ticked  |
 | Properties (permissions, owner)    | Right-click → Properties…                        |
 | Rename / Delete                    | Right-click → Rename… / Delete…                  |
 | Create directory                   | **New folder**, or right-click empty space       |

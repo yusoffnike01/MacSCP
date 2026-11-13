@@ -422,6 +422,22 @@ export function registerIpcHandlers() {
     }
   );
 
+  // Search by name (see ssh.search). The window picks the id, so it can
+  // listen for results before any arrive.
+  ipcMain.handle(
+    "sftp:search",
+    (evt, searchId: string, sessionId: string, rootPath: string, query: string) => {
+      const sender = evt.sender;
+      return ssh.search(searchId, sessionId, rootPath, query, (hits) => {
+        if (!sender.isDestroyed()) sender.send(`sftp:search-hits:${searchId}`, hits);
+      });
+    }
+  );
+
+  ipcMain.handle("sftp:cancel-search", (_evt, searchId: string) => {
+    ssh.cancelSearch(searchId);
+  });
+
   // Open with Cursor / VS Code (see external-edit.ts).
   ipcMain.handle(
     "sftp:open-external",
